@@ -1,0 +1,17 @@
+# Background
+background = 000000
+background-opacity = 0.6
+background-blur-radius = 20
+
+# Font
+font-family = JetBrainsMono Nerd Font Mono
+font-size = 13
+font-thicken = true
+
+# Theme
+theme = Brogrammer
+
+# Nice extras
+window-padding-x = 12
+window-padding-y = 12
+cursor-style = bar
