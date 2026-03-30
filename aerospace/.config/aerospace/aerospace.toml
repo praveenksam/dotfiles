@@ -119,9 +119,10 @@ alt-2 = 'workspace 2'
 alt-3 = 'workspace 3'
 alt-4 = 'workspace 4'
 alt-5 = 'workspace 5'
+alt-6 = 'workspace 6'
 alt-b = 'workspace B'  # Background Apps (1P) Workspace
-alt-c = 'workspace C'  # Comms Workspace
 alt-p = 'workspace P'  # Planning Workspace for Planning Mail, Calender, Things
+alt-s = 'workspace S'  # Slack and other messaging Workspace
 
 # See: https://nikitabobko.github.io/AeroSpace/commands#move-node-to-workspace
 alt-shift-1 = 'move-node-to-workspace 1'
@@ -129,9 +130,10 @@ alt-shift-2 = 'move-node-to-workspace 2'
 alt-shift-3 = 'move-node-to-workspace 3'
 alt-shift-4 = 'move-node-to-workspace 4'
 alt-shift-5 = 'move-node-to-workspace 5'
+alt-shift-6 = 'move-node-to-workspace 6'
 alt-shift-b = 'move-node-to-workspace B'
-alt-shift-c = 'move-node-to-workspace C'
 alt-shift-p = 'move-node-to-workspace P'
+alt-shift-s = 'move-node-to-workspace S'
 
 # See: https://nikitabobko.github.io/AeroSpace/commands#workspace-back-and-forth
 alt-tab = 'workspace-back-and-forth'
@@ -158,15 +160,15 @@ alt-shift-l = ['join-with right', 'mode main']
 # Setting Window based callbacks
 [[on-window-detected]]
 if.app-id = 'com.microsoft.teams2'
-run = "move-node-to-workspace C"
+run = "move-node-to-workspace S"
 
 [[on-window-detected]]
 if.app-id = 'com.google.Chrome.app.mdpkiolbdkhdjpekfbkbmhigcaggjagi'
-run = "move-node-to-workspace C"
+run = "move-node-to-workspace S"
 
 [[on-window-detected]]
 if.app-id = 'com.tinyspeck.slackmacgap'
-run = "move-node-to-workspace C"
+run = "move-node-to-workspace S"
 
 [[on-window-detected]]
 if.app-id = 'com.apple.mail'
@@ -187,7 +189,7 @@ run = "move-node-to-workspace P"
 4='built-in'
 5='built-in'
 6='built-in'
-C='built-in'
 B='built-in'
 P='main'
+S='built-in'
 
