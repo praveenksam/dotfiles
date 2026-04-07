@@ -1,4 +1,5 @@
 #!/bin/bash
+CONFIG_DIR="${CONFIG_DIR:-/Users/praveensam/.config/sketchybar}"
 source "$CONFIG_DIR/colors.sh"
 
 WIFI=$(networksetup -getairportnetwork en0 | cut -d' ' -f4-)

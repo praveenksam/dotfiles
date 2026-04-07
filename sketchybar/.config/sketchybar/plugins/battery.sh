@@ -1,4 +1,5 @@
 #!/bin/bash
+CONFIG_DIR="${CONFIG_DIR:-/Users/praveensam/.config/sketchybar}"
 source "$CONFIG_DIR/colors.sh"
 
 PERCENTAGE=$(pmset -g batt | grep -o '[0-9]*%' | head -1 | tr -d '%')
@@ -15,7 +16,7 @@ elif [ "$PERCENTAGE" -gt 50 ]; then
   COLOR=$YELLOW
 elif [ "$PERCENTAGE" -gt 20 ]; then
   ICON="󰁼"
-  COLOR=$ORANGE
+  COLOR=$YELLOW
 else
   ICON="󰁺"
   COLOR=$RED
