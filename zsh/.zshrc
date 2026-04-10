@@ -7,6 +7,8 @@ alias ll="eza --icons --long --git"
 alias lla="eza --icons --long --git --all"
 alias lt="eza --icons --tree --level=2"
 alias chordpro="/Applications/ChordPro.app/Contents/MacOS/chordpro"
+# glow specifically for markdown
+alias md='glow -p'
 
 # Autosuggestions
 source $(brew --prefix)/share/zsh-autosuggestions/zsh-autosuggestions.zsh
@@ -16,6 +18,14 @@ eval "$(fzf --zsh)"
 
 # zoxide (smarter cd)
 eval "$(zoxide init zsh --cmd cd)"
+
+function cat() {
+  if [[ "$1" == *.md ]]; then
+    glow -p "$1"
+  else
+    bat "$@"
+  fi
+}
 
 function cheat() {
   local content=$(cat << 'EOF'
