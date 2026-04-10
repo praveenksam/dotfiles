@@ -1,0 +1,21 @@
+[user]
+    name = Praveen Sam
+    email = praveenkoshysam@gmail.com
+
+[includeIf "gitdir:~/work/"]
+    path = ~/.gitconfig-work
+
+[includeIf "gitdir:~/personal/"]
+    path = ~/.gitconfig-personal
+
+[init]
+    defaultBranch = main
+
+[core]
+    editor = nvim
+
+[pull]
+    rebase = false
+
+[push]
+    autoSetupRemote = true
