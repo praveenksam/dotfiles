@@ -93,6 +93,14 @@ sketchybar --add item cpu right \
   icon.color=$MAGENTA \
   script="$CONFIG_DIR/plugins/cpu.sh"
 
+sketchybar --add item docker right \
+  --set docker \
+  update_freq=5 \
+  icon=󰡨 \
+  icon.font="sketchybar-app-font:Regular:16.0" \
+  script="$CONFIG_DIR/plugins/docker.sh" \
+  --subscribe docker system_woke
+
 sketchybar --update
 
 # Force initial run of all scripts

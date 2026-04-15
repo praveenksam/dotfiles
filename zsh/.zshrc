@@ -9,6 +9,12 @@ alias lt="eza --icons --tree --level=2"
 alias chordpro="/Applications/ChordPro.app/Contents/MacOS/chordpro"
 # glow specifically for markdown
 alias md='glow -p'
+# what's listening on which port
+alias ports="lsof -iTCP -sTCP:LISTEN -P -n"
+# docker services specifically  
+alias services="docker ps --format 'table {{.Names}}\t{{.Status}}\t{{.Ports}}'"
+# combined — ports + process name
+alias listening="lsof -iTCP -sTCP:LISTEN -P -n | awk 'NR==1 || \$1 != \"rapportd\"' | sort -k9"
 
 # Autosuggestions
 source $(brew --prefix)/share/zsh-autosuggestions/zsh-autosuggestions.zsh
@@ -16,8 +22,6 @@ source $(brew --prefix)/share/zsh-autosuggestions/zsh-autosuggestions.zsh
 # fzf
 eval "$(fzf --zsh)"
 
-# zoxide (smarter cd)
-eval "$(zoxide init zsh --cmd cd)"
 
 function cat() {
   if [[ "$1" == *.md ]]; then
@@ -124,20 +128,58 @@ function cheat() {
 | brew list             | List installed packages    |
 
 ## BMAD
-| Command                        | Action                              |
-|--------------------------------|-------------------------------------|
-| npx bmad-method@latest install | Init BMAD in current repo           |
-| claude                         | Open Claude Code                    |
-| /workflow-init                 | Initialize BMAD workflow            |
-| /workflow-status               | Check phase progress                |
-| /product-brief                 | Phase 1: define scope               |
-| /prd                           | Phase 2: write requirements doc     |
-| /architecture                  | Phase 3: design system              |
-| /sprint-planning               | Phase 4: plan sprint                |
-| /create-story                  | Create a user story file            |
-| /dev-story                     | Implement a story                   |
-| /brainstorm                    | Structured brainstorming session    |
-| bmad-help                      | Get guidance on what to do next     |
+| Command                                   | Action                                                     |
+|-------------------------------------------|------------------------------------------------------------|
+| npx bmad-method install                   | Init BMAD in current repo                                  |
+| claude                                    | Open Claude Code                                           |
+                  
+                  ************ MODULE 1: BMM (Product Development) ************ 
+| /bmad-bmm-document-project                | Analyse existing codebase, produce docs (brownfield)       |
+| /bmad-bmm-generate-project-context        | Scan codebase -> lean project-context.md                   |
+| /bmad-bmm-quick-spec                      | Fast one-page spec for small changes                       |
+| /bmad-bmm-quick-dev                       | Implement small tasks without full planning                |
+| /bmad-bmm-correct-course                  | Handle mid-sprint pivots or major blockers                 |
+                                **** Phase 1: Analysis ****
+| /bmad-brainstorming                       | Facilitated brainistorming                                 |
+| /bmad-bmm-market-research                 | Competitive landscape, customer/market trends              |
+| /bmad-bmm-domain-research                 | Deep dive into domain terminology                          |
+| /bmad-bmm-technical-research              | Tech feasibility, architecture options                     |
+| /bmad-bmm-create-product-brief            | Crystallise product idea into brief                        |
+                                **** Phase 2: Planning ****
+| /bmad-bmm-create-prd                      | Produces the PRD                                           |
+| /bmad-bmm-validate-prd                    | Checks PRD is comprehensive and cohesive                   |
+| /bmad-bmm-edit-prd                        | Improve and enhance existing PRD                           |
+| /bmad-bmm-create-ux-design                | UX patterns and design specifications                      |
+                               **** Phase 3: Solutioning ****
+| /bmad-bmm-create-architecture             | Documents all technical decisions                          |
+| /bmad-bmm-create-epics-and-stories        | Breaks requirements into epics + stories                   |
+| /bmad-bmm-check-implementation-readiness  | Validates PRD, UX, arch, stories are aligned               |
+                             **** Phase 4: Implementation ****
+| /bmad-bmm-sprint-planning                 | Generates sprint plan from epics                           |
+| /bmad-bmm-sprint-status                   | Summarises sprint status, routes to next workflow          |
+| /bmad-bmm-create-story                    | Prepares next story with full context                      |
+| /bmad-bmm-dev-story                       | Executes story implementation + tests                      |
+| /bmad-bmm-code-review                     | Adversarial review; routes back to dev if issues           |
+| /bmad-bmm-retrospective                   | Post-epic review, lessons learned                          |
+| /bmad-bmm-dev-story                       | Executes story implementation + tests                      |
+| /bmad-bmm-code-review                     | Adversarial review; routes back to dev if issues           |
+
+                ************ MODULE 2: CIS (Creative Innovation Suite) ************ 
+| /bmad-cis-innovation-strategy             | Disruption opportunities, business model innovation        |
+| /bmad-cis-problem-solving                 | Systematic methods for complex challenges                  |
+| /bmad-cis-design-thinking                 | Human-centered, empathy-driven design process              |
+| /bmad-cis-brainstorming                   | Structured brainstorming with proven techniques            |
+| /bmad-cis-storytelling                    | Narrative frameworks for pitches and comms                 |
+
+                    ************ MODULE 3: Core (Universal tools) ************ 
+| /bmad-help                                | Shows next recommended workflow                            |
+| /bmad-party-mode                          | Multi-agent discussion with all installed agents           |
+| /bmad-index-docs                          | Lightweight doc index for fast LLM scanning                |
+| /bmad-shard-doc                           | Split large docs into smaller section files (>500 lines)   |
+| /bmad-editorial-review-prose              | Review prose for clarity and tone                          |
+| /bmad-editorial-review-structure          | Propose cuts, reorganization, simplification               |
+| /bmad-review-adversarial-general          | Find issues and weaknesses in any deliverable              |
+| /bmad-review-edge-case-hunter             | Hunt unhandled edge cases in code or content               |
 
 ## CLAUDE CODE
 | Command                        | Action                              |
@@ -152,6 +194,39 @@ function cheat() {
 | /help                          | Show available commands             |
 | Ctrl+c                         | Cancel current operation            |
 | Ctrl+d                         | Exit Claude Code                    |
+
+## DOCKER
+| Command                                      | Action                                      |
+|----------------------------------------------|---------------------------------------------|
+| docker ps                                    | List running containers                     |
+| docker ps -a                                 | List all containers (incl. stopped)         |
+| docker images                                | List local images                           |
+| docker pull <image>                          | Pull image from registry                    |
+| docker build -t <name> .                     | Build image from Dockerfile in current dir  |
+| docker run -it <image>                       | Run container interactively                 |
+| docker run -d -p <host>:<cont> <image>       | Run detached with port mapping              |
+| docker run --rm -it <image> sh               | Run throwaway container with shell          |
+| docker exec -it <container> sh               | Shell into running container                |
+| docker stop <container>                      | Stop running container                      |
+| docker rm <container>                        | Remove stopped container                    |
+| docker rmi <image>                           | Remove image                                |
+| docker logs <container>                      | View container logs                         |
+| docker logs -f <container>                   | Follow container logs                       |
+| docker inspect <container>                   | Detailed container info (JSON)              |
+| docker cp <container>:<path> <dest>          | Copy file from container to host            |
+| docker volume ls                             | List volumes                                |
+| docker volume rm <volume>                    | Remove volume                               |
+| docker network ls                            | List networks                               |
+| docker system prune                          | Remove stopped containers + dangling images |
+| docker system prune -a                       | Remove everything unused                    |
+| docker compose up -d                         | Start services in background                |
+| docker compose down                          | Stop and remove containers                  |
+| docker compose down -v                       | Stop, remove containers + volumes           |
+| docker compose logs -f                       | Follow logs for all services                |
+| docker compose ps                            | List compose service status                 |
+| docker compose exec <svc> sh                 | Shell into a compose service                |
+| docker compose build                         | Rebuild images                              |
+| docker compose restart <svc>                 | Restart a specific service                  |
 
 EOF
 )
@@ -175,3 +250,6 @@ EOF
 
 # Syntax highlighting (must be last)
 source $(brew --prefix)/share/zsh-syntax-highlighting/zsh-syntax-highlighting.zsh
+
+# zoxide (smarter cd)
+eval "$(zoxide init zsh --cmd cd)"
