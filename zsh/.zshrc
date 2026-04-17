@@ -15,6 +15,17 @@ alias ports="lsof -iTCP -sTCP:LISTEN -P -n"
 alias services="docker ps --format 'table {{.Names}}\t{{.Status}}\t{{.Ports}}'"
 # combined — ports + process name
 alias listening="lsof -iTCP -sTCP:LISTEN -P -n | awk 'NR==1 || \$1 != \"rapportd\"' | sort -k9"
+# memory consumed
+alias memory='ps aux | sort -rk4 | head -25 | awk '\''
+BEGIN {
+  printf "%-8s %-35s %6s %10s\n", "USER", "PROCESS", "MEM%", "RAM"
+  printf "%-8s %-35s %6s %10s\n", "--------", "-----------------------------------", "------", "----------"
+}
+{
+  split($11, path, "/")
+  name = path[length(path)]
+  printf "%-8s %-35s %5.1f%% %8.1fMB\n", $1, name, $4, $6/1024
+}'\'''
 
 # Autosuggestions
 source $(brew --prefix)/share/zsh-autosuggestions/zsh-autosuggestions.zsh
