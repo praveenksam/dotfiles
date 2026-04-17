@@ -25,6 +25,22 @@ BEGIN {
   split($11, path, "/")
   name = path[length(path)]
   printf "%-8s %-35s %5.1f%% %8.1fMB\n", $1, name, $4, $6/1024
+}'\'' && echo "" && vm_stat | awk '\''
+BEGIN { page=16384 }
+/Pages active/                 { active=$3 }
+/Pages inactive/               { inactive=$3 }
+/Pages wired/                  { wired=$4 }
+/Pages free/                   { free=$3 }
+/Pages occupied by compressor/ { compressed=$5 }
+END {
+  used   = (active + wired + compressed) * page / 1073741824
+  inactive_gb = inactive * page / 1073741824
+  free_gb  = free * page / 1073741824
+  total  = used + inactive_gb + free_gb
+  printf "%-12s %6.1f GB\n", "Used:",      used
+  printf "%-12s %6.1f GB\n", "Inactive:",  inactive_gb
+  printf "%-12s %6.1f GB\n", "Free:",      free_gb
+  printf "%-12s %6.1f GB\n", "Total:",     total
 }'\'''
 
 # Autosuggestions
