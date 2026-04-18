@@ -42,6 +42,30 @@ END {
   printf "%-12s %6.1f GB\n", "Free:",      free_gb
   printf "%-12s %6.1f GB\n", "Total:",     total
 }'\'''
+# Thinking-writing workflow
+## Add a new thought
+alias think='uv run --project ~/Documents/personal/Local\ AI\ Thought\ Partner/python-thought-pipeline ~/Documents/personal/Local\ AI\ Thought\ Partner/python-thought-pipeline/pipeline.py add'
+## List all thoughts saved
+alias thoughts='uv run --project ~/Documents/personal/Local\ AI\ Thought\ Partner/python-thought-pipeline ~/Documents/personal/Local\ AI\ Thought\ Partner/python-thought-pipeline/pipeline.py list'
+## Syntheiize from my thoughts and play back to me - slow due to big model
+alias synthesize='uv run --project ~/Documents/personal/Local\ AI\ Thought\ Partner/python-thought-pipeline ~/Documents/personal/Local\ AI\ Thought\ Partner/python-thought-pipeline/pipeline.py synthesize'
+## Have a dialogue against ideas
+alias reflect='uv run --project ~/Documents/personal/Local\ AI\ Thought\ Partner/python-thought-pipeline ~/Documents/personal/Local\ AI\ Thought\ Partner/python-thought-pipeline/pipeline.py dialogue'
+function tlist() {
+  if [ -n "$1" ]; then
+    uv run --project ~/Documents/personal/Local\ AI\ Thought\ Partner/python-thought-pipeline ~/Documents/personal/Local\ AI\ Thought\ Partner/python-thought-pipeline/pipeline.py list --tag "$1"
+  else
+    uv run --project ~/Documents/personal/Local\ AI\ Thought\ Partner/python-thought-pipeline ~/Documents/personal/Local\ AI\ Thought\ Partner/python-thought-pipeline/pipeline.py list
+  fi
+}
+
+function tsynth() {
+  if [ -n "$1" ]; then
+    uv run --project ~/Documents/personal/Local\ AI\ Thought\ Partner/python-thought-pipeline ~/Documents/personal/Local\ AI\ Thought\ Partner/python-thought-pipeline/pipeline.py synthesize --tag "$1"
+  else
+    uv run --project ~/Documents/personal/Local\ AI\ Thought\ Partner/python-thought-pipeline ~/Documents/personal/Local\ AI\ Thought\ Partner/python-thought-pipeline/pipeline.py synthesize
+  fi
+}
 
 # Autosuggestions
 source $(brew --prefix)/share/zsh-autosuggestions/zsh-autosuggestions.zsh
