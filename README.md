@@ -60,7 +60,7 @@ brew tap nikitabobko/tap
 ```sh
 brew install stow git neovim tmux lazygit ripgrep fd node nvm uv \
              starship zsh-autosuggestions zsh-syntax-highlighting \
-             fzf zoxide eza bat glow sketchybar borders
+             fzf zoxide eza bat glow sketchybar borders fastfetch
 ```
 
 **Install GUI apps:**
@@ -99,7 +99,7 @@ cd ~/dotfiles
 Stow everything at once:
 
 ```sh
-stow zsh tmux ghostty sketchybar aerospace starship nvim git gh
+stow zsh tmux ghostty sketchybar aerospace starship nvim git gh fastfetch
 ```
 
 This creates symlinks from `~/dotfiles/<tool>/` to the expected locations in `~` and `~/.config/`. All tool configs are now active.
