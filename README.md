@@ -17,9 +17,13 @@ A keyboard-driven, terminal-first macOS development environment. Built for a Mac
 
 ---
 
-## Prerequisites
+## Installation
 
-### 1. Install Homebrew
+Follow these steps in order. All tools are installed first, then the dotfiles repo is cloned and stowed in one pass. Per-tool configuration steps that require the tools to already be installed (services, plugins, system settings) come last.
+
+---
+
+### Step 1 — Install Homebrew
 
 ```sh
 /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
@@ -38,74 +42,96 @@ Verify:
 brew doctor
 ```
 
-### 2. Install GNU Stow
+---
+
+### Step 2 — Install all tools
+
+**Add required Homebrew taps first:**
 
 ```sh
-brew install stow
+brew tap FelixKratz/formulae
+brew tap nikitabobko/tap
 ```
+
+> Both Aerospace and Ghostty are in their own taps, not the main Homebrew cask repo. Both JankyBorders and Sketchybar share the FelixKratz tap.
+
+**Install all CLI tools:**
+
+```sh
+brew install stow git neovim tmux lazygit ripgrep fd node nvm uv \
+             starship zsh-autosuggestions zsh-syntax-highlighting \
+             fzf zoxide eza bat glow sketchybar borders
+```
+
+**Install GUI apps:**
+
+```sh
+brew install --cask ghostty aerospace
+```
+
+**Install fonts:**
+
+```sh
+brew install --cask font-jetbrains-mono-nerd-font font-sketchybar-app-font
+```
+
+> Both fonts are required. `font-jetbrains-mono-nerd-font` is used by Ghostty, Starship, Sketchybar and Neovim. `font-sketchybar-app-font` provides the app icons in Sketchybar workspace pills. Without these you will see broken squares and missing icons throughout the setup.
 
 ---
 
-## Installation
+### Step 3 — Clone dotfiles and stow
 
-### Clone the repo
+Back up any existing configs that might conflict:
+
+```sh
+mv ~/.config/nvim ~/.config/nvim.bak 2>/dev/null
+mv ~/.local/share/nvim ~/.local/share/nvim.bak 2>/dev/null
+mv ~/.gitconfig ~/.gitconfig.bak 2>/dev/null
+```
+
+Clone the repo:
 
 ```sh
 git clone git@github.com:yourusername/dotfiles.git ~/dotfiles
 cd ~/dotfiles
 ```
 
-### Stow all configs
+Stow everything at once:
 
 ```sh
-stow zsh tmux ghostty sketchybar aerospace starship nvim git
+stow zsh tmux ghostty sketchybar aerospace starship nvim git gh
 ```
 
-This creates symlinks from `~/dotfiles/<tool>/` to the expected locations in `~` and `~/.config/`.
+This creates symlinks from `~/dotfiles/<tool>/` to the expected locations in `~` and `~/.config/`. All tool configs are now active.
 
 ---
 
-## Tool setup
+### Step 4 — Post-stow configuration
 
-### Ghostty
+These steps require the tools to be installed and configs to be active.
 
-Install via Homebrew:
+#### Ghostty
 
-```sh
-brew install --cask nikitabobko/tap/ghostty
-```
-
-> Ghostty is in the developer's own tap, not the main cask repository. `brew install --cask ghostty` will not work.
-
-Config lands at `~/.config/ghostty/config` via stow.
+No additional setup required. Launch Ghostty and it will use the stowed config.
 
 ---
 
-### Fonts — JetBrainsMono Nerd Font
+#### Fonts — verify install
 
-Required for Ghostty, Starship icons, Sketchybar, and Neovim:
+Open Font Book and confirm both of these are present:
+
+- `JetBrainsMono Nerd Font Mono`
+- `sketchybar-app-font`
+
+If either is missing, reinstall:
 
 ```sh
-brew install --cask font-jetbrains-mono-nerd-font
+brew reinstall --cask font-jetbrains-mono-nerd-font font-sketchybar-app-font
 ```
-
-Also install the sketchybar app font for workspace app icons:
-
-```sh
-brew install --cask font-sketchybar-app-font
-```
-
-> Without these two fonts, you will see broken squares and missing icons throughout the setup.
 
 ---
 
-### Shell
-
-Install shell plugins and tools:
-
-```sh
-brew install starship zsh-autosuggestions zsh-syntax-highlighting fzf zoxide eza bat glow
-```
+#### Shell
 
 Set up Starship preset (optional — pick one from [starship.rs/presets](https://starship.rs/presets)):
 
@@ -113,79 +139,53 @@ Set up Starship preset (optional — pick one from [starship.rs/presets](https:/
 starship preset catppuccin-powerline -o ~/.config/starship.toml
 ```
 
-> Note: `zsh-syntax-highlighting` must always be sourced **last** in `.zshrc`. The stowed `.zshrc` already handles this correctly.
+Reload your shell:
+
+```sh
+source ~/.zshrc
+```
+
+> `zsh-syntax-highlighting` must always be sourced last in `.zshrc`. The stowed `.zshrc` already handles this correctly — do not reorder.
 
 ---
 
-### tmux
+#### tmux — install plugins
 
-Install tmux and TPM (Tmux Plugin Manager):
-
-```sh
-brew install tmux
-git clone https://github.com/tmux-plugins/tpm ~/.tmux/plugins/tpm
-```
-
-Start a tmux session and install plugins:
+Start a tmux session:
 
 ```sh
 tmux
 ```
 
-Then inside tmux:
+Install all plugins with TPM:
 
 ```
 Ctrl+a + I
 ```
 
-> Capital `I` — this installs all plugins defined in `.tmux.conf`. Wait for the install to complete before using tmux.
+> Capital `I`. Wait for the install to complete before using tmux.
+
+Clone TPM if not already present:
+
+```sh
+git clone https://github.com/tmux-plugins/tpm ~/.tmux/plugins/tpm
+```
 
 ---
 
-### Aerospace
+#### Aerospace
 
-Install via the developer's Homebrew tap:
+Launch Aerospace from Spotlight or Finder, then grant accessibility permissions:
 
-```sh
-brew install --cask nikitabobko/tap/aerospace
-```
+**System Settings → Privacy & Security → Accessibility → enable Aerospace**
 
-> Like Ghostty, Aerospace is not in the main Homebrew cask repository. The standard `brew install --cask aerospace` will fail.
-
-After launching Aerospace:
-
-1. Open **System Settings → Privacy & Security → Accessibility**
-2. Grant Aerospace permissions
-
-Config lands at `~/.aerospace.toml` via stow.
+> Without accessibility permissions Aerospace cannot manage windows.
 
 ---
 
-### JankyBorders
+#### Sketchybar
 
-Install via FelixKratz's Homebrew tap:
-
-```sh
-brew tap FelixKratz/formulae
-brew install borders
-```
-
-> Both `borders` and `sketchybar` are in the same tap. Adding the tap once covers both.
-
-Borders launches automatically via Aerospace's `after-startup-command` in `.aerospace.toml`. No separate service needed.
-
----
-
-### Sketchybar
-
-Install via FelixKratz's tap (same tap as borders — skip `brew tap` if already added):
-
-```sh
-brew tap FelixKratz/formulae
-brew install sketchybar
-```
-
-Download the icon map for app icons:
+Download the icon map for app icons (not stowed — downloaded fresh per machine):
 
 ```sh
 curl -L https://github.com/kvndrsslr/sketchybar-app-font/releases/latest/download/icon_map.sh \
@@ -193,13 +193,15 @@ curl -L https://github.com/kvndrsslr/sketchybar-app-font/releases/latest/downloa
 chmod +x ~/.config/sketchybar/icon_map.sh
 ```
 
-> The `icon_map.sh` is not stowed — it is downloaded fresh on each machine. This ensures you always get the latest app icon mappings.
-
 Enable the required system setting:
 
 **System Settings → Desktop & Dock → Displays have separate Spaces → ON**
 
 > Sketchybar will not work correctly without this setting enabled.
+
+Hide the native macOS menu bar:
+
+**System Settings → Control Center → Automatically hide and show the menu bar → Always**
 
 Start sketchybar as a service:
 
@@ -207,15 +209,13 @@ Start sketchybar as a service:
 brew services start sketchybar
 ```
 
-Hide the native macOS menu bar:
-
-**System Settings → Control Center → Automatically hide and show the menu bar → Always**
+> JankyBorders does not need a separate service — it launches automatically via Aerospace's `after-startup-command` in `.aerospace.toml`.
 
 ---
 
-### Git — multi-account setup
+#### Git — multi-account setup
 
-Update the email addresses in the stowed gitconfig files:
+Update email addresses in the stowed gitconfig files:
 
 ```sh
 nvim ~/dotfiles/git/.gitconfig          # set your name and default email
@@ -251,8 +251,8 @@ Host bizgit
 Add public keys to each GitHub account:
 
 ```sh
-cat ~/.ssh/id_personal.pub   # add to personal GitHub SSH settings
-cat ~/.ssh/id_work.pub       # add to work GitHub SSH settings
+cat ~/.ssh/id_personal.pub   # paste into personal GitHub SSH settings
+cat ~/.ssh/id_work.pub       # paste into work GitHub SSH settings
 ```
 
 Clone repos using the correct host alias:
@@ -262,26 +262,13 @@ git clone git@mygit:username/repo.git     # personal
 git clone git@bizgit:orgname/repo.git     # work
 ```
 
-> The gitconfig conditional includes automatically apply the correct email based on directory. Personal repos must live under `~/personal/` and work repos under `~/work/` for this to work.
+> The gitconfig conditional includes automatically apply the correct email based on which directory the repo lives in. Personal repos must be cloned into `~/personal/` and work repos into `~/work/` for this to work correctly.
 
 ---
 
-### Neovim
+#### Neovim — first launch
 
-Install Neovim and dependencies:
-
-```sh
-brew install neovim lazygit ripgrep fd node
-```
-
-Back up any existing config:
-
-```sh
-mv ~/.config/nvim ~/.config/nvim.bak 2>/dev/null
-mv ~/.local/share/nvim ~/.local/share/nvim.bak 2>/dev/null
-```
-
-After stowing, open Neovim — LazyVim will auto-install all plugins on first launch:
+Open Neovim — LazyVim will auto-install all plugins on first launch:
 
 ```sh
 nvim
@@ -289,55 +276,21 @@ nvim
 
 Wait for the plugin install to complete, then install remaining language servers:
 
-```sh
-# Inside nvim
+```
 :MasonInstall html-lsp css-lsp powershell-editor-services
 ```
 
 Update treesitter parsers:
 
-```sh
-# Inside nvim
+```
 :TSUpdate
 ```
 
-> The brogrammer colorscheme (`marciomazza/vim-brogrammer-theme`) is installed automatically by LazyVim on first launch.
+> The brogrammer colorscheme is installed automatically by LazyVim on first launch.
 
 ---
 
-### Python tooling
-
-Install uv:
-
-```sh
-brew install uv
-```
-
-Install a Python version:
-
-```sh
-uv python install 3.12
-uv python pin 3.12
-```
-
----
-
-### Node tooling
-
-Install nvm:
-
-```sh
-brew install nvm
-```
-
-Add to `~/.zshrc` (already included in stowed zshrc):
-
-```sh
-export NVM_DIR="$HOME/.nvm"
-[ -s "/opt/homebrew/opt/nvm/nvm.sh" ] && \. "/opt/homebrew/opt/nvm/nvm.sh"
-```
-
-Install Node LTS:
+#### Node — install LTS
 
 ```sh
 nvm install --lts
@@ -346,9 +299,16 @@ nvm use --lts
 
 ---
 
-### Claude Code
+#### Python — pin a version
 
-Install globally:
+```sh
+uv python install 3.12
+uv python pin 3.12
+```
+
+---
+
+#### Claude Code (optional)
 
 ```sh
 npm install -g @anthropic-ai/claude-code
@@ -356,7 +316,7 @@ npm install -g @anthropic-ai/claude-code
 
 ---
 
-### BMAD Method
+#### BMAD Method (optional, per project)
 
 BMAD is installed per project, not globally:
 
@@ -396,7 +356,7 @@ npx bmad-method@latest install
         └── .gitconfig-personal
 ```
 
-> Configure Downloads and Screenshots to save to `~/inbox/` to prevent accumulation.
+> Set Downloads and Screenshots to save to `~/inbox/` to prevent accumulation.
 
 ---
 
@@ -431,15 +391,13 @@ brew update && brew upgrade
 
 Update Neovim plugins:
 
-```sh
-# Inside nvim
+```
 :Lazy update
 :TSUpdate
 ```
 
 Update tmux plugins:
 
-```sh
-# Inside tmux
+```
 Ctrl+a + U
 ```
