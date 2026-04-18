@@ -181,6 +181,8 @@ Launch Aerospace from Spotlight or Finder, then grant accessibility permissions:
 
 > Without accessibility permissions Aerospace cannot manage windows.
 
+> To ensure apps tile properly it is important to disable the option in System Settings: `Displays have separate spaces`
+
 ---
 
 #### Sketchybar
