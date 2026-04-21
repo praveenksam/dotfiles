@@ -18,8 +18,8 @@ sketchybar --bar \
 sketchybar --default \
   icon.font="JetBrainsMono Nerd Font Mono:Bold:14.0" \
   label.font="JetBrainsMono Nerd Font Mono:Regular:13.0" \
-  icon.color=$WHITE \
-  label.color=$WHITE \
+  icon.color=$TEXT \
+  label.color=$TEXT \
   padding_left=6 \
   padding_right=6 \
   label.padding_left=4 \

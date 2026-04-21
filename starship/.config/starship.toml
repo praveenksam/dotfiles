@@ -1,15 +1,15 @@
 "$schema" = 'https://starship.rs/config-schema.json'
 
 format = """
-[](red)\
+[](gold)\
 $os\
 $username\
-[](bg:peach fg:red)\
+[](bg:gold fg:love)\
 $directory\
-[](bg:yellow fg:peach)\
+[](bg:rose fg:pine)\
 $git_branch\
 $git_status\
-[](fg:yellow bg:green)\
+[](fg:rose bg:foam)\
 $c\
 $rust\
 $golang\
@@ -19,152 +19,152 @@ $java\
 $kotlin\
 $haskell\
 $python\
-[](fg:green bg:sapphire)\
+[](fg:foam bg:pine)\
 $conda\
-[](fg:sapphire bg:lavender)\
+[](fg:pine bg:iris)\
 $time\
-[ ](fg:lavender)\
+[ ](fg:iris)\
 $cmd_duration\
 $line_break\
 $character"""
 
-palette = 'catppuccin_mocha'
+palette = 'rose_pine_dawn'
 
 [os]
 disabled = false
-style = "bg:red fg:crust"
+style = "bg:gold fg:base"
 
 [os.symbols]
-Windows = ""
-Ubuntu = "󰕈"
-SUSE = ""
-Raspbian = "󰐿"
-Mint = "󰣭"
-Macos = "󰀵"
-Manjaro = ""
-Linux = "󰌽"
-Gentoo = "󰣨"
-Fedora = "󰣛"
-Alpine = ""
-Amazon = ""
-Android = ""
-AOSC = ""
-Arch = "󰣇"
-Artix = "󰣇"
-CentOS = ""
-Debian = "󰣚"
-Redhat = "󱄛"
-RedHatEnterprise = "󱄛"
+Windows            = ""
+Ubuntu             = "󰕈"
+SUSE               = ""
+Raspbian           = "󰐿"
+Mint               = "󰣭"
+Macos              = "󰀵"
+Manjaro            = ""
+Linux              = "󰌽"
+Gentoo             = "󰣨"
+Fedora             = "󰣛"
+Alpine             = ""
+Amazon             = ""
+Android            = ""
+AOSC               = ""
+Arch               = "󰣇"
+Artix              = "󰣇"
+CentOS             = ""
+Debian             = "󰣚"
+Redhat             = "󱄛"
+RedHatEnterprise   = "󱄛"
 
 [username]
 show_always = true
-style_user = "bg:red fg:crust"
-style_root = "bg:red fg:crust"
-format = '[ $user]($style)'
+style_user  = "bg:gold fg:base"
+style_root  = "bg:love fg:base"
+format      = '[ $user]($style)'
 
 [directory]
-style = "bg:peach fg:crust"
-format = "[ $path ]($style)"
-truncation_length = 3
-truncation_symbol = "…/"
+style               = "bg:rose fg:base"
+format              = "[ $path ]($style)"
+truncation_length   = 3
+truncation_symbol   = "…/"
 
 [directory.substitutions]
 "Documents" = "󰈙 "
-"Downloads" = " "
-"Music" = "󰝚 "
-"Pictures" = " "
+"Downloads" = " "
+"Music"     = "󰝚 "
+"Pictures"  = " "
 "Developer" = "󰲋 "
 
 [git_branch]
-symbol = ""
-style = "bg:yellow"
-format = '[[ $symbol $branch ](fg:crust bg:yellow)]($style)'
+symbol = ""
+style  = "bg:rose"
+format = '[[ $symbol $branch ](fg:base bg:rose)]($style)'
 
 [git_status]
-style = "bg:yellow"
-format = '[[($all_status$ahead_behind )](fg:crust bg:yellow)]($style)'
+style  = "bg:rose"
+format = '[[($all_status$ahead_behind )](fg:base bg:rose)]($style)'
 
 [nodejs]
-symbol = ""
-style = "bg:green"
-format = '[[ $symbol( $version) ](fg:crust bg:green)]($style)'
+symbol = ""
+style  = "bg:foam"
+format = '[[ $symbol( $version) ](fg:base bg:foam)]($style)'
 
 [c]
-symbol = " "
-style = "bg:green"
-format = '[[ $symbol( $version) ](fg:crust bg:green)]($style)'
+symbol = " "
+style  = "bg:foam"
+format = '[[ $symbol( $version) ](fg:base bg:foam)]($style)'
 
 [rust]
-symbol = ""
-style = "bg:green"
-format = '[[ $symbol( $version) ](fg:crust bg:green)]($style)'
+symbol = ""
+style  = "bg:foam"
+format = '[[ $symbol( $version) ](fg:base bg:foam)]($style)'
 
 [golang]
-symbol = ""
-style = "bg:green"
-format = '[[ $symbol( $version) ](fg:crust bg:green)]($style)'
+symbol = ""
+style  = "bg:foam"
+format = '[[ $symbol( $version) ](fg:base bg:foam)]($style)'
 
 [php]
-symbol = ""
-style = "bg:green"
-format = '[[ $symbol( $version) ](fg:crust bg:green)]($style)'
+symbol = ""
+style  = "bg:foam"
+format = '[[ $symbol( $version) ](fg:base bg:foam)]($style)'
 
 [java]
-symbol = " "
-style = "bg:green"
-format = '[[ $symbol( $version) ](fg:crust bg:green)]($style)'
+symbol = " "
+style  = "bg:foam"
+format = '[[ $symbol( $version) ](fg:base bg:foam)]($style)'
 
 [kotlin]
-symbol = ""
-style = "bg:green"
-format = '[[ $symbol( $version) ](fg:crust bg:green)]($style)'
+symbol = ""
+style  = "bg:foam"
+format = '[[ $symbol( $version) ](fg:base bg:foam)]($style)'
 
 [haskell]
-symbol = ""
-style = "bg:green"
-format = '[[ $symbol( $version) ](fg:crust bg:green)]($style)'
+symbol = ""
+style  = "bg:foam"
+format = '[[ $symbol( $version) ](fg:base bg:foam)]($style)'
 
 [python]
-symbol = ""
-style = "bg:green"
-format = '[[ $symbol( $version)(\(#$virtualenv\)) ](fg:crust bg:green)]($style)'
+symbol = ""
+style  = "bg:foam"
+format = '[[ $symbol( $version)(\(#$virtualenv\)) ](fg:base bg:foam)]($style)'
 
 [docker_context]
-symbol = ""
-style = "bg:sapphire"
-format = '[[ $symbol( $context) ](fg:crust bg:sapphire)]($style)'
+symbol = ""
+style  = "bg:pine"
+format = '[[ $symbol( $context) ](fg:base bg:pine)]($style)'
 
 [conda]
-symbol = "  "
-style = "fg:crust bg:sapphire"
-format = '[$symbol$environment ]($style)'
+symbol      = "  "
+style       = "fg:base bg:pine"
+format      = '[$symbol$environment ]($style)'
 ignore_base = false
 
 [time]
-disabled = false
-time_format = "%R"
-style = "bg:lavender"
-format = '[[  $time ](fg:crust bg:lavender)]($style)'
+disabled     = false
+time_format  = "%R"
+style        = "bg:iris"
+format       = '[[  $time ](fg:base bg:iris)]($style)'
 
 [line_break]
 disabled = true
 
 [character]
-disabled = false
-success_symbol = '[❯](bold fg:green)'
-error_symbol = '[❯](bold fg:red)'
-vimcmd_symbol = '[❮](bold fg:green)'
-vimcmd_replace_one_symbol = '[❮](bold fg:lavender)'
-vimcmd_replace_symbol = '[❮](bold fg:lavender)'
-vimcmd_visual_symbol = '[❮](bold fg:yellow)'
+disabled                   = false
+success_symbol             = '[❯](bold fg:foam)'
+error_symbol               = '[❯](bold fg:love)'
+vimcmd_symbol              = '[❮](bold fg:foam)'
+vimcmd_replace_one_symbol  = '[❮](bold fg:iris)'
+vimcmd_replace_symbol      = '[❮](bold fg:iris)'
+vimcmd_visual_symbol       = '[❮](bold fg:gold)'
 
 [cmd_duration]
-show_milliseconds = true
-format = " in $duration "
-style = "bg:lavender"
-disabled = false
-show_notifications = true
-min_time_to_notify = 45000
+show_milliseconds   = true
+format              = " in $duration "
+style               = "bg:iris"
+disabled            = false
+show_notifications  = true
+min_time_to_notify  = 45000
 
 [palettes.catppuccin_mocha]
 rosewater = "#f5e0dc"
@@ -277,3 +277,17 @@ surface0 = "#363a4f"
 base = "#24273a"
 mantle = "#1e2030"
 crust = "#181926"
+
+[palettes.rose_pine_dawn]
+base = "#faf4ed"
+surface = "#f2e9e1"
+muted = "#9893a5"
+subtle = "#cecacd"
+text = "#575279"
+love = "#b4637a"
+gold = "#ea9d34"
+iris = "#907aa9"
+pine = "#286983"
+foam = "#56949f"
+rose = "#d7827a"
+

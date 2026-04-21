@@ -1,6 +1,6 @@
 # Background
-background = 000000
-background-opacity = 0.7
+background = faf4ed
+background-opacity = 0.9
 background-blur-radius = 20
 
 # Font
@@ -9,7 +9,7 @@ font-size = 13
 font-thicken = true
 
 # Theme
-theme = Brogrammer
+theme = Rose Pine Dawn
 
 # Nice extras
 window-padding-x = 12

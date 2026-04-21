@@ -17,7 +17,7 @@ for sid in 1 2 3 4 5 6 B P S; do
 
   if [ "$FOCUSED" = "$sid" ]; then
     sketchybar --set space.$sid \
-      background.color=$YELLOW \
+      background.color=$GOLD \
       icon.color=$BLACK \
       label="$icons" \
       label.color=$BLACK \
@@ -26,15 +26,15 @@ for sid in 1 2 3 4 5 6 B P S; do
     if [ -z "$icons" ]; then
       # Hide empty workspaces
       sketchybar --set space.$sid \
-        background.color=$SURFACE0 \
-        icon.color=$OVERLAY \
+        background.color=$MUTED \
+        icon.color=$TEXT \
         label.drawing=off
     else
       sketchybar --set space.$sid \
-        background.color=$SURFACE0 \
-        icon.color=$WHITE \
+        background.color=$MUTED \
+        icon.color=$OVERLAY \
         label="$icons" \
-        label.color=$WHITE \
+        label.color=$OVERLAY \
         label.drawing=on
     fi
   fi
