@@ -4,6 +4,7 @@ source "$CONFIG_DIR/colors.sh"
 
 # Bar appearance
 sketchybar --bar \
+  topmost=window \
   height=40 \
   position=top \
   sticky=on \

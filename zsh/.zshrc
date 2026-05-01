@@ -6,6 +6,10 @@ alias ls="eza --icons"
 alias ll="eza --icons --long --git"
 alias lla="eza --icons --long --git --all"
 alias lt="eza --icons --tree --level=2"
+# claude setup
+alias claude-personal="CLAUDE_CONFIG_DIR=~/.claude-personal claude"
+alias claude-work="CLAUDE_CONFIG_DIR=~/.claude-work claude"
+# chordpro cli setup
 alias chordpro="/Applications/ChordPro.app/Contents/MacOS/chordpro"
 # glow specifically for markdown
 alias md='glow -p'
@@ -67,9 +71,6 @@ function tsynth() {
   fi
 }
 
-# Autosuggestions
-source $(brew --prefix)/share/zsh-autosuggestions/zsh-autosuggestions.zsh
-
 # fzf
 eval "$(fzf --zsh)"
 
@@ -95,6 +96,10 @@ function cheat() {
 | prefix + [         | Scroll mode (q to exit)       |
 | prefix + d         | Detach session                |
 | prefix + $         | Rename session                |
+| prefix + w         | View all windows              |
+| prefix + n         | Next window                   |
+| prefix + p         | Previous window               |
+| prefix + ,         | Rename window                 |
 | Ctrl+h/j/k/l       | Navigate panes / nvim splits  |
 | t                  | New/attach tmux session       |
 
@@ -299,8 +304,9 @@ EOF
   fi
 }
 
-# Syntax highlighting (must be last)
-source $(brew --prefix)/share/zsh-syntax-highlighting/zsh-syntax-highlighting.zsh
-
 # zoxide (smarter cd)
 eval "$(zoxide init zsh --cmd cd)"
+export PATH="/opt/homebrew/bin:$PATH"
+
+# Syntax highlighting (must be last)
+source /opt/homebrew/share/zsh-syntax-highlighting/zsh-syntax-highlighting.zsh
