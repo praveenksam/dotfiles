@@ -1,0 +1,759 @@
+# Story 2.2: JSON Workflow Configuration System
+
+Status: ready-for-dev
+
+## Story
+
+As an **admin**,
+I want to upload and update a JSON workflow configuration file that defines the agent's available tools and instructions,
+so that new agent workflows can be added or changed without modifying platform code.
+
+## Acceptance Criteria
+
+**Given** a valid JSON workflow config is uploaded via `POST /api/admin/config`
+**When** `WorkflowRegistry` processes the file
+**Then** `validate_schema()` confirms the presence of required fields: `version` (semver), `workflow_id`, `tools` (array with `name`, `description`, `parameters`), `agent_instructions` (string)
+**And** the config is stored in `workflow_configs` with `version`, `config_json`, and `loaded_at`
+
+**Given** the extension loads
+**When** `GET /api/config/workflow` is called
+**Then** the current active workflow config is returned and `WorkflowRegistry.get_tool_definitions()` reflects the loaded tools (FR22, FR27)
+
+**Given** a new config is uploaded while a session is in progress
+**When** the in-flight session makes a subsequent tool call
+**Then** the session continues using the config version it started with — no disruption or corruption (NFR10)
+
+**Given** an invalid or version-mismatched config is uploaded
+**When** `validate_schema()` runs
+**Then** the upload is rejected with a clear error and the previous active config remains unchanged (FR26, FR27)
+
+---
+
+## Tasks / Subtasks
+
+### [ ] Task 1 — Add `is_active` column to `WorkflowConfig` model and create migration (AC: 1, 3)
+
+Update `autom9-backend/app/models/workflow_config.py`:
+
+```python
+from datetime import datetime, timezone
+from uuid import UUID, uuid4
+
+from sqlalchemy import DateTime
+from sqlalchemy.orm import Mapped, mapped_column
+
+from app.db.base import Base
+
+
+class WorkflowConfig(Base):
+    __tablename__ = "workflow_configs"
+
+    id: Mapped[UUID] = mapped_column(primary_key=True, default=uuid4)
+    version: Mapped[str]
+    config_json: Mapped[str]
+    loaded_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
+    is_active: Mapped[bool] = mapped_column(default=False)
+```
+
+Create `autom9-backend/alembic/versions/0002_workflow_config_is_active.py`:
+
+```python
+"""workflow_config_is_active
+
+Revision ID: 0002
+Revises: 0001
+Create Date: 2026-04-22
+
+"""
+from typing import Sequence, Union
+
+import sqlalchemy as sa
+from alembic import op
+
+revision: str = "0002"
+down_revision: Union[str, None] = "0001"
+branch_labels: Union[str, Sequence[str], None] = None
+depends_on: Union[str, Sequence[str], None] = None
+
+
+def upgrade() -> None:
+    op.add_column(
+        "workflow_configs",
+        sa.Column("is_active", sa.Boolean(), nullable=False, server_default="false"),
+    )
+
+
+def downgrade() -> None:
+    op.drop_column("workflow_configs", "is_active")
+```
+
+- `server_default="false"` ensures existing rows in production don't violate the NOT NULL constraint.
+- Migration ID chain: `0002` revises `0001`.
+
+---
+
+### [ ] Task 2 — Create workflow schema `app/config/workflow_schema.py` (AC: 1, 4)
+
+Create `autom9-backend/app/config/workflow_schema.py`:
+
+```python
+import re
+from pydantic import BaseModel, field_validator
+
+SEMVER_RE = re.compile(r"^\d+\.\d+\.\d+$")
+
+
+class ToolDefinition(BaseModel):
+    name: str
+    description: str
+    parameters: dict  # JSON Schema object; no deep validation in v1
+
+
+class WorkflowConfigSchema(BaseModel):
+    version: str
+    workflow_id: str
+    tools: list[ToolDefinition]
+    agent_instructions: str
+
+    @field_validator("version")
+    @classmethod
+    def version_is_semver(cls, v: str) -> str:
+        if not SEMVER_RE.match(v):
+            raise ValueError("version must be semver format, e.g. '1.0.0'")
+        return v
+
+    @field_validator("workflow_id")
+    @classmethod
+    def workflow_id_not_empty(cls, v: str) -> str:
+        if not v.strip():
+            raise ValueError("workflow_id must not be blank")
+        return v
+
+    @field_validator("agent_instructions")
+    @classmethod
+    def instructions_not_empty(cls, v: str) -> str:
+        if not v.strip():
+            raise ValueError("agent_instructions must not be blank")
+        return v
+```
+
+- `ToolDefinition.parameters` is `dict` — no deeper schema validation in v1 (ARC-4 says "parameters" is required but doesn't specify its schema).
+- Extra fields in the JSON payload are silently ignored (Pydantic default).
+- `WorkflowConfigSchema` is used ONLY for validation in `WorkflowRegistry`. Do NOT expose it directly as a FastAPI request model — receive raw `dict` in the endpoint and validate via registry.
+
+---
+
+### [ ] Task 3 — Create `WorkflowRegistry` in `app/config/workflow_registry.py` (AC: 1, 2, 3, 4)
+
+Create `autom9-backend/app/config/workflow_registry.py`:
+
+```python
+import json
+
+from pydantic import ValidationError
+from sqlalchemy import select, update
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from app.config.workflow_schema import WorkflowConfigSchema
+from app.models.workflow_config import WorkflowConfig
+
+
+class WorkflowRegistry:
+    """In-memory singleton holding the active workflow config.
+
+    Lifecycle:
+    - Populated from DB at app startup via load_from_db().
+    - Updated atomically on each successful register_workflow() call.
+    - Thread-safe for single-process async use (no concurrent writes from multiple Uvicorn workers in v1).
+    """
+
+    def __init__(self) -> None:
+        self._active: dict | None = None
+
+    def validate_schema(self, config: dict) -> WorkflowConfigSchema:
+        """Parse and validate config dict. Raises ValidationError on failure."""
+        return WorkflowConfigSchema.model_validate(config)
+
+    async def register_workflow(self, config: dict, db: AsyncSession) -> WorkflowConfig:
+        """Validate, persist to DB as active, and update in-memory state.
+
+        All previous rows are deactivated atomically before the new row is inserted.
+        Raises pydantic.ValidationError if config is invalid — in-memory state is NOT
+        updated, leaving the previous active config intact (NFR10 rollback safety).
+        """
+        parsed = self.validate_schema(config)  # raises ValidationError before any DB write
+
+        # Deactivate all existing active configs
+        await db.execute(update(WorkflowConfig).values(is_active=False))
+
+        row = WorkflowConfig(
+            version=parsed.version,
+            config_json=json.dumps(config),
+            is_active=True,
+        )
+        db.add(row)
+        await db.flush()  # get row.id without committing; get_db dep commits at request end
+
+        # Update in-memory state AFTER flush — only reaches here if DB write succeeded
+        self._active = config
+        return row
+
+    def get_tool_definitions(self) -> list[dict]:
+        """Return the tools list from the active config.
+
+        Returns [] if no config is loaded (fresh deployment, no config uploaded yet).
+        """
+        if self._active is None:
+            return []
+        parsed = WorkflowConfigSchema.model_validate(self._active)
+        return [t.model_dump() for t in parsed.tools]
+
+    @property
+    def active_config(self) -> dict | None:
+        """Raw dict of the current active config, or None if none loaded."""
+        return self._active
+
+    async def load_from_db(self, db: AsyncSession) -> None:
+        """Load active config from DB. Called once at app startup."""
+        result = await db.execute(
+            select(WorkflowConfig).where(WorkflowConfig.is_active.is_(True)).limit(1)
+        )
+        row = result.scalar_one_or_none()
+        if row is not None:
+            self._active = json.loads(row.config_json)
+
+
+# Module-level singleton — imported by routers and lifespan
+workflow_registry = WorkflowRegistry()
+```
+
+- `validate_schema()` raises `pydantic.ValidationError` BEFORE any DB write. This guarantees NFR10: if validation fails, `_active` is never changed and the previous config stays intact.
+- `db.flush()` is used, NOT `db.commit()` — consistent with project pattern (`get_db` dep owns commit/rollback). [Source: Story 2.1#Review Findings P4]
+- `is_(True)` is the SQLAlchemy 2.0 idiom for boolean column comparison (avoids ambiguity).
+
+---
+
+### [ ] Task 4 — Create Pydantic schemas `app/schemas/config.py` (AC: 1, 2)
+
+Create `autom9-backend/app/schemas/config.py`:
+
+```python
+from pydantic import BaseModel
+from app.schemas.status import Meta
+
+
+class WorkflowConfigUploadResponse(BaseModel):
+    data: dict  # {"version": "1.0.0", "workflow_id": "planning", "tool_count": 3}
+    meta: Meta
+
+
+class WorkflowConfigGetResponse(BaseModel):
+    data: dict | None  # Full config dict, or None if no config loaded
+    meta: Meta
+```
+
+- Upload request body is received as `dict` in the endpoint (not a typed Pydantic model) because the config's `tools[].parameters` is freeform JSON.
+- `WorkflowConfigGetResponse.data` is `None` when no config has been uploaded yet — extension must handle this gracefully.
+
+---
+
+### [ ] Task 5 — Create admin config router `app/api/admin/config.py` (AC: 1, 4)
+
+Create `autom9-backend/app/api/admin/config.py`:
+
+```python
+import uuid
+
+from fastapi import APIRouter, Depends, Request
+from pydantic import ValidationError
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from app.api.deps import require_admin
+from app.config.workflow_registry import workflow_registry
+from app.db.deps import get_db
+from app.schemas.config import WorkflowConfigUploadResponse
+from app.schemas.status import Meta
+
+router = APIRouter(prefix="/api/admin/config", tags=["admin"])
+
+
+@router.post("", status_code=200, response_model=WorkflowConfigUploadResponse,
+             dependencies=[Depends(require_admin)])
+async def upload_workflow_config(
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+) -> WorkflowConfigUploadResponse:
+    """Upload and activate a new JSON workflow config.
+
+    Request body must be the raw JSON config object (Content-Type: application/json).
+    Returns 422 with structured error if schema validation fails.
+    Previous active config is preserved on any error.
+    """
+    body: dict = await request.json()
+
+    try:
+        row = await workflow_registry.register_workflow(body, db)
+    except ValidationError as exc:
+        # Re-raise as FastAPI 422 via the exception handler
+        raise exc
+
+    return WorkflowConfigUploadResponse(
+        data={
+            "version": row.version,
+            "workflow_id": body.get("workflow_id", ""),
+            "tool_count": len(body.get("tools", [])),
+        },
+        meta=Meta(request_id=str(uuid.uuid4())),
+    )
+```
+
+- Receives raw JSON via `request.json()` instead of a typed Pydantic model — avoids `tools[].parameters` freeform-dict conflicts with FastAPI's automatic validation.
+- `ValidationError` from Pydantic is re-raised — FastAPI's default exception handler returns 422 with field-level detail. This preserves previous active config (validated before DB write in `register_workflow`).
+- No explicit `db.commit()` — `get_db` dep handles it. [Source: Story 2.1#Review Findings P4]
+
+---
+
+### [ ] Task 6 — Create public config router `app/api/config.py` (AC: 2)
+
+Create `autom9-backend/app/api/config.py`:
+
+```python
+import uuid
+
+from fastapi import APIRouter
+
+from app.config.workflow_registry import workflow_registry
+from app.schemas.config import WorkflowConfigGetResponse
+from app.schemas.status import Meta
+
+router = APIRouter(prefix="/api/config", tags=["config"])
+
+
+@router.get("/workflow", status_code=200, response_model=WorkflowConfigGetResponse)
+async def get_workflow_config() -> WorkflowConfigGetResponse:
+    """Return the current active workflow config.
+
+    Returns data: None if no config has been uploaded yet.
+    No auth required — extension fetches this on load (FR22, FR27).
+    """
+    return WorkflowConfigGetResponse(
+        data=workflow_registry.active_config,
+        meta=Meta(request_id=str(uuid.uuid4())),
+    )
+```
+
+- No `require_admin` — the extension fetches this on load (FR22, FR27). Config JSON is not sensitive (tools/instructions, no credentials).
+- Returns from in-memory `active_config` — no DB query per request.
+
+---
+
+### [ ] Task 7 — Wire routers and startup loading into `app/main.py` (AC: 2)
+
+In `autom9-backend/app/main.py`:
+
+Add imports:
+```python
+from app.api.admin.config import router as admin_config_router
+from app.api.config import router as workflow_config_router
+from app.config.workflow_registry import workflow_registry
+from app.db.engine import AsyncSessionFactory
+```
+
+Update `lifespan` to load registry from DB at startup:
+```python
+@asynccontextmanager
+async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
+    _configure_logging()
+    async with AsyncSessionFactory() as db:
+        await workflow_registry.load_from_db(db)
+    yield
+```
+
+Add routers (after existing includes):
+```python
+app.include_router(admin_config_router)
+app.include_router(workflow_config_router)
+```
+
+- Do NOT remove or reorder existing routers (`sessions_router`, `status_router`, `admin_credentials_router`).
+- `AsyncSessionFactory` is already used by `get_db` dep — safe to use directly in lifespan.
+- Startup DB load is best-effort: if DB has no active config, `_active` stays `None` (first deployment, no config yet). This is NOT an error.
+
+---
+
+### [ ] Task 8 — Write tests `tests/api/test_admin_config.py` (AC: 1, 2, 4)
+
+Create `autom9-backend/tests/api/test_admin_config.py`:
+
+```python
+import pytest
+from httpx import AsyncClient
+
+pytestmark = pytest.mark.asyncio(loop_scope="session")
+
+ADMIN_HEADERS = {"X-Autom9-Token": "test-backend-secret"}
+
+VALID_CONFIG = {
+    "version": "1.0.0",
+    "workflow_id": "planning",
+    "tools": [
+        {
+            "name": "submit_planning_request",
+            "description": "Submit a Smartsheet planning request",
+            "parameters": {"type": "object", "properties": {}},
+        }
+    ],
+    "agent_instructions": "You are a planning assistant. Help the consultant schedule their work.",
+}
+
+
+async def test_upload_valid_config_returns_200(client: AsyncClient):
+    response = await client.post(
+        "/api/admin/config",
+        json=VALID_CONFIG,
+        headers=ADMIN_HEADERS,
+    )
+    assert response.status_code == 200
+    body = response.json()
+    assert body["data"]["version"] == "1.0.0"
+    assert body["data"]["workflow_id"] == "planning"
+    assert body["data"]["tool_count"] == 1
+    assert "request_id" in body["meta"]
+
+
+async def test_upload_requires_admin_auth(client: AsyncClient):
+    response = await client.post("/api/admin/config", json=VALID_CONFIG)
+    assert response.status_code == 401
+
+
+async def test_upload_invalid_version_returns_422(client: AsyncClient):
+    bad_config = {**VALID_CONFIG, "version": "not-semver"}
+    response = await client.post("/api/admin/config", json=bad_config, headers=ADMIN_HEADERS)
+    assert response.status_code == 422
+
+
+async def test_upload_missing_workflow_id_returns_422(client: AsyncClient):
+    bad_config = {k: v for k, v in VALID_CONFIG.items() if k != "workflow_id"}
+    response = await client.post("/api/admin/config", json=bad_config, headers=ADMIN_HEADERS)
+    assert response.status_code == 422
+
+
+async def test_upload_missing_tools_returns_422(client: AsyncClient):
+    bad_config = {k: v for k, v in VALID_CONFIG.items() if k != "tools"}
+    response = await client.post("/api/admin/config", json=bad_config, headers=ADMIN_HEADERS)
+    assert response.status_code == 422
+
+
+async def test_upload_blank_agent_instructions_returns_422(client: AsyncClient):
+    bad_config = {**VALID_CONFIG, "agent_instructions": "   "}
+    response = await client.post("/api/admin/config", json=bad_config, headers=ADMIN_HEADERS)
+    assert response.status_code == 422
+
+
+async def test_get_workflow_returns_active_config(client: AsyncClient):
+    await client.post("/api/admin/config", json=VALID_CONFIG, headers=ADMIN_HEADERS)
+    response = await client.get("/api/config/workflow")
+    assert response.status_code == 200
+    body = response.json()
+    assert body["data"]["version"] == "1.0.0"
+    assert body["data"]["workflow_id"] == "planning"
+    assert "request_id" in body["meta"]
+
+
+async def test_get_workflow_no_auth_required(client: AsyncClient):
+    """GET /api/config/workflow is public — extension fetches without auth."""
+    response = await client.get("/api/config/workflow")
+    assert response.status_code == 200
+
+
+async def test_upload_second_config_replaces_first(client: AsyncClient):
+    """New upload becomes active; previous config is deactivated (NFR10 infrastructure)."""
+    config_v1 = {**VALID_CONFIG, "version": "1.0.0"}
+    config_v2 = {**VALID_CONFIG, "version": "2.0.0"}
+
+    await client.post("/api/admin/config", json=config_v1, headers=ADMIN_HEADERS)
+    await client.post("/api/admin/config", json=config_v2, headers=ADMIN_HEADERS)
+
+    response = await client.get("/api/config/workflow")
+    assert response.json()["data"]["version"] == "2.0.0"
+
+
+async def test_invalid_upload_preserves_previous_active_config(client: AsyncClient):
+    """Failed upload leaves previous active config intact (NFR10, FR27)."""
+    await client.post("/api/admin/config", json=VALID_CONFIG, headers=ADMIN_HEADERS)
+    bad_config = {**VALID_CONFIG, "version": "bad-version"}
+    await client.post("/api/admin/config", json=bad_config, headers=ADMIN_HEADERS)
+
+    response = await client.get("/api/config/workflow")
+    assert response.json()["data"]["version"] == "1.0.0"
+
+
+async def test_only_one_active_config_in_db(client: AsyncClient, db_session):
+    """After two uploads, only the latest row has is_active=True."""
+    from sqlalchemy import func, select
+    from app.models.workflow_config import WorkflowConfig
+
+    config_v1 = {**VALID_CONFIG, "version": "1.0.0"}
+    config_v2 = {**VALID_CONFIG, "version": "2.0.0"}
+    await client.post("/api/admin/config", json=config_v1, headers=ADMIN_HEADERS)
+    await client.post("/api/admin/config", json=config_v2, headers=ADMIN_HEADERS)
+
+    result = await db_session.execute(
+        select(func.count()).where(WorkflowConfig.is_active.is_(True))
+    )
+    assert result.scalar_one() == 1
+```
+
+---
+
+### [ ] Task 9 — Write unit tests `tests/config/test_workflow_registry.py` (AC: 1, 3, 4)
+
+Create `autom9-backend/tests/config/__init__.py` (empty).
+
+Create `autom9-backend/tests/config/test_workflow_registry.py`:
+
+```python
+import pytest
+from pydantic import ValidationError
+from app.config.workflow_registry import WorkflowRegistry
+
+VALID = {
+    "version": "1.0.0",
+    "workflow_id": "planning",
+    "tools": [{"name": "tool_a", "description": "desc", "parameters": {}}],
+    "agent_instructions": "Do the thing.",
+}
+
+
+def test_validate_schema_passes_valid_config():
+    registry = WorkflowRegistry()
+    parsed = registry.validate_schema(VALID)
+    assert parsed.version == "1.0.0"
+    assert len(parsed.tools) == 1
+
+
+def test_validate_schema_rejects_bad_semver():
+    registry = WorkflowRegistry()
+    with pytest.raises(ValidationError):
+        registry.validate_schema({**VALID, "version": "v1.0"})
+
+
+def test_validate_schema_rejects_missing_workflow_id():
+    registry = WorkflowRegistry()
+    bad = {k: v for k, v in VALID.items() if k != "workflow_id"}
+    with pytest.raises(ValidationError):
+        registry.validate_schema(bad)
+
+
+def test_get_tool_definitions_empty_when_no_config():
+    registry = WorkflowRegistry()
+    assert registry.get_tool_definitions() == []
+
+
+def test_get_tool_definitions_returns_tools_after_active_set():
+    registry = WorkflowRegistry()
+    registry._active = VALID  # Simulate loaded state directly
+    tools = registry.get_tool_definitions()
+    assert len(tools) == 1
+    assert tools[0]["name"] == "tool_a"
+
+
+def test_active_config_none_on_init():
+    registry = WorkflowRegistry()
+    assert registry.active_config is None
+```
+
+- Unit tests use a fresh `WorkflowRegistry()` instance per test — do NOT use the module-level `workflow_registry` singleton.
+- No DB fixture needed for pure unit tests.
+
+---
+
+### [ ] Task 10 — Add `WorkflowConfigPanel.svelte` to admin panel (AC: 1 — admin UI)
+
+Create `autom9-extension/src/components/WorkflowConfigPanel.svelte`:
+
+```svelte
+<script lang="ts">
+  import { apiFetch } from '../lib/api';
+
+  let configJson = $state('');
+  let saving = $state(false);
+  let saved = $state(false);
+  let errorMsg = $state('');
+
+  async function handleSubmit(e: SubmitEvent) {
+    e.preventDefault();
+    saving = true;
+    saved = false;
+    errorMsg = '';
+    try {
+      let parsed: unknown;
+      try {
+        parsed = JSON.parse(configJson);
+      } catch {
+        errorMsg = 'Invalid JSON — please check your config file.';
+        return;
+      }
+      await apiFetch('/api/admin/config', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(parsed),
+      });
+      saved = true;
+    } catch (err) {
+      errorMsg = err instanceof Error ? err.message : 'Failed to upload config';
+    } finally {
+      saving = false;
+    }
+  }
+</script>
+
+<section class="workflow-config-panel">
+  <h3>Workflow Configuration</h3>
+  <form onsubmit={handleSubmit}>
+    <label>
+      Config JSON
+      <textarea
+        bind:value={configJson}
+        rows={10}
+        placeholder='{"version": "1.0.0", "workflow_id": "...", "tools": [], "agent_instructions": "..."}'
+        required
+      ></textarea>
+    </label>
+
+    {#if saved}
+      <p class="success">Workflow config uploaded successfully.</p>
+    {/if}
+    {#if errorMsg}
+      <p class="error">{errorMsg}</p>
+    {/if}
+
+    <button type="submit" disabled={saving}>
+      {saving ? 'Uploading…' : 'Upload Config'}
+    </button>
+  </form>
+</section>
+```
+
+Wire into `autom9-extension/src/components/AdminConfig.svelte`:
+```svelte
+import WorkflowConfigPanel from './WorkflowConfigPanel.svelte';
+```
+And add `<WorkflowConfigPanel />` after the existing credential form.
+
+- Svelte 5 `$state()` runes — consistent with `AdminConfig.svelte` (Story 2.1).
+- Client-side JSON parse before sending — gives user immediate feedback on malformed JSON.
+- `apiFetch` is in `src/lib/api.ts` — use it, don't re-implement fetch.
+- **IMPORTANT**: `apiFetch` does NOT auto-inject `X-Autom9-Token`. Same v1 limitation as `AdminConfig.svelte` — admin token is a dev-time concern. The backend rejects unauthenticated uploads with 401.
+
+---
+
+### [ ] Task 11 — Build validation
+
+Run `cd autom9-backend && python -m pytest tests/config/ tests/api/test_admin_config.py -v` — all new tests must pass.
+
+Run `cd autom9-backend && python -m pytest tests/ -v` — full suite must pass (no regressions in status, sessions, credentials tests).
+
+Run `cd autom9-extension && npm run build` — must succeed with zero TypeScript errors.
+
+---
+
+## Dev Notes
+
+### WorkflowRegistry Singleton Pattern
+
+`workflow_registry = WorkflowRegistry()` is a module-level singleton in `app/config/workflow_registry.py`. It is:
+- Imported by `app/api/admin/config.py` and `app/api/config.py`
+- Populated at startup via `load_from_db()` in `main.py` lifespan
+- Updated on each successful `POST /api/admin/config` call
+
+In v1 (single Uvicorn process), this is safe. Do NOT add locking — async Python is single-threaded per event loop iteration.
+
+### NFR10 Session Pinning Design
+
+NFR10 requires in-flight sessions to use their startup config version. Implementation approach for v1:
+
+1. This story provides the infrastructure: `is_active` column + `WorkflowRegistry` in-memory state.
+2. Epic 3 (Story 3.3, `POST /api/chat`) will implement the agent pipeline. At that point, sessions should call `GET /api/config/workflow` at session start and pin the returned config to the session.
+3. Sessions that have already started will have their config in memory — a subsequent `POST /api/admin/config` updates the registry but does NOT affect already-running sessions because they hold their own copy.
+4. For this story: the test `test_invalid_upload_preserves_previous_active_config` verifies the critical property — failed uploads don't corrupt the active config.
+
+### Validation Before DB Write (NFR10 Safety)
+
+`register_workflow()` calls `validate_schema()` FIRST, before any `db.execute()`. If validation raises `ValidationError`, no DB state changes and `_active` is unchanged. This is the primary NFR10 guarantee for this story.
+
+### get_db Commit Pattern
+
+Do NOT call `await db.commit()` in routers. `get_db` dep in `app/db/deps.py` calls `await session.commit()` after the route handler returns. Use `await db.flush()` to get generated UUIDs mid-handler. [Source: Story 2.1#Review Findings P4]
+
+### Admin Auth Pattern
+
+`X-Autom9-Token: <BACKEND_SECRET>` header via `require_admin` dep from `app/api/deps.py`. Tests use `{"X-Autom9-Token": "test-backend-secret"}`. [Source: Story 2.1#Dev Notes — Admin Auth Pattern]
+
+### JSON Config Upload Pattern
+
+`POST /api/admin/config` receives raw JSON body via `request.json()` (not a typed Pydantic model in the function signature). This avoids FastAPI's automatic 422 generation from the route's body type, giving `WorkflowRegistry.validate_schema()` control over error messages. The Pydantic `ValidationError` propagates naturally to FastAPI's 422 response.
+
+### Files to Create
+
+```
+autom9-backend/
+  app/
+    config/
+      workflow_schema.py       ← Task 2
+      workflow_registry.py     ← Task 3
+    api/
+      admin/
+        config.py              ← Task 5
+      config.py                ← Task 6
+    schemas/
+      config.py                ← Task 4
+  alembic/
+    versions/
+      0002_workflow_config_is_active.py  ← Task 1
+  tests/
+    config/
+      __init__.py              ← Task 9
+      test_workflow_registry.py ← Task 9
+    api/
+      test_admin_config.py     ← Task 8
+autom9-extension/
+  src/
+    components/
+      WorkflowConfigPanel.svelte  ← Task 10
+```
+
+### Files to Modify
+
+```
+autom9-backend/
+  app/
+    models/workflow_config.py  ← Task 1: add is_active column
+    main.py                    ← Task 7: add routers + lifespan registry load
+autom9-extension/
+  src/
+    components/AdminConfig.svelte  ← Task 10: import + render WorkflowConfigPanel
+```
+
+### Architecture References
+
+- [Source: architecture.md#ARC-4] — JSON Workflow Config Schema: `version` (semver), `tools`, `agent_instructions`, `workflow_id`
+- [Source: architecture.md#NFR10] — Version mismatch handling: config update must not break in-flight sessions
+- [Source: architecture.md#Backend — FastAPI structure] — `app/config/` houses WorkflowRegistry
+- [Source: epics.md#Story 2.2] — AC and dev notes
+- [Source: epics.md#FR22, FR26, FR27] — JSON config as extensibility contract, no code changes for new workflows
+- [Source: Story 2.1#Dev Notes] — Admin auth pattern, get_db pattern, single-tenant org_id
+
+---
+
+## Dev Agent Record
+
+### Agent Model Used
+
+claude-sonnet-4-6
+
+### Debug Log References
+
+### Completion Notes List
+
+### File List

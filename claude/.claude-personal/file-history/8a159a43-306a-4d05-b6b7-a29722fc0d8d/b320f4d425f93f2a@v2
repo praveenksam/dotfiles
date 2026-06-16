@@ -1,0 +1,172 @@
+# Epic 3 Retrospective — 2026-04-30
+
+## Epic Summary
+
+**Epic 3: Consultant Planning Request Workflow (Core POC)**
+
+Delivered the full end-to-end consultant workflow: Tableau data display → multi-turn agent chat → Smartsheet planning request → Google Calendar invite creation. All 6 stories completed.
+
+**Delivery Metrics:**
+- Stories completed: 6/6 (100%)
+- Test suite: 134 → 205 tests (+71 new tests)
+- ARC-9 masking gate: 100% branch coverage maintained throughout all 6 stories
+- TypeScript builds: clean on every story
+- Review patches applied: ~35 issues caught and fixed within story cycles
+- Deferred items: 30+ tracked in deferred-work.md
+
+**Stories delivered:**
+- 3.1: Planning Data Display Panel (2026-04-24)
+- 3.2: Token Masking & Rehydration Pipeline (2026-04-29)
+- 3.3: Agent Chat Interface (2026-04-29)
+- 3.4: Agent Orchestration & Action Confirmation (2026-04-29)
+- 3.5: Smartsheet Planning Request Integration (2026-04-29)
+- 3.6: Google Calendar Integration (2026-04-29)
+
+---
+
+## Team Participants
+
+- Alice (Product Owner)
+- Charlie (Senior Dev)
+- Dana (QA Engineer)
+- Elena (Junior Dev)
+- Bob (Scrum Master, facilitating)
+- CodeBeard (Project Lead)
+
+---
+
+## What Went Well
+
+1. **End-to-end POC delivered** — full consultant workflow functional: Tableau data → chat → Smartsheet → Calendar, without leaving the dashboard. The core product value proposition is working.
+
+2. **Registry-driven architecture held up** — zero if/else in orchestration layer. Adding Google Calendar in 3.6 required only a new class and JSON config entry — nothing in `chat.py` changed. The pattern from 3.4 aged well immediately.
+
+3. **ARC-9 gate maintained** — 100% branch coverage on masking.py through all 6 stories, while the surrounding code changed constantly. Required deliberate discipline.
+
+4. **Review cycle worked** — 35 patches caught and applied within story cycles, not discovered post-delivery. Issues found at the right time.
+
+5. **Test growth** — 71 new tests in a single epic, consistent with prior epics' quality bar.
+
+---
+
+## Challenges & Growth Areas
+
+1. **Integration stories scoped too tightly to happy paths** — Stories 3.5 and 3.6 had the most review findings (11 and 7 patches respectively). Edge cases — race conditions, token flow across confirm paths, error isolation — only emerged during implementation and review. They were predictable in hindsight but not captured in ACs.
+
+2. **PRD requirements split silently across stories** — FR18 (param rehydration before tool execution) was a requirement that spanned 3.2, 3.4, and 3.5 without a clear owner story. The gap was caught in code review, not in planning.
+
+3. **Unclear requirements in the PRD** — CodeBeard identified this as the primary friction. Behavioural ACs were vague ("plain-language error message"); architectural ACs like ARC-9 were concrete and testable. Integration story specs reflected this gap most acutely.
+
+4. **Architecture diverged from spec without explicit decisions** — Story 3.3: `InputBar.svelte` ended up stateless with `ChatPanel` owning fetch logic (different from spec). `ChatState` missing `'complete'` state. Both defensible calls, but undocumented at story level.
+
+5. **Deferred work log growing** — 30+ items, many carrying "pre-existing" labels across stories. Some will affect Epic 4 directly.
+
+---
+
+## Key Insights
+
+1. **Scope integration stories to include failure mode analysis** — not just happy path ACs. Race conditions, token flow, and error isolation belong in the story spec, discovered before implementation.
+
+2. **Cross-story PRD requirements need an explicit owner story** — requirements spanning multiple stories should be identified at epic planning time and tracked explicitly, not split silently.
+
+3. **Deferred work accumulates compound interest** — items marked "pre-existing, deferred" in story 3.1 were still "pre-existing, deferred" in story 3.6. Some of these will become real problems in Epic 4.
+
+4. **Frontend has zero automated test coverage** — DataPanel, ChatPanel, ActionConfirm all manually verified only. CI won't catch regressions. Acceptable for POC, not sustainable beyond.
+
+---
+
+## Previous Retrospective Follow-Through
+
+This is the first formal retrospective for the autom9 project. No prior commitments to assess.
+
+---
+
+## Epic 4 Preview & Dependencies
+
+**Epic 4: Open Work Discovery & Acceptance (POC Stretch Goal)**
+- Story 4.1: Open Work Board Ingestion & Display
+- Story 4.2: Capacity & Availability Check
+- Story 4.3: Accept / Decline Flow & Coordinator Notification
+
+**Critical dependency gap identified:**
+- `GoogleDocsIntegration` is still a stub (always raises `IntegrationError`). Story 4.1 depends entirely on a real implementation. This is the top preparation priority.
+
+**Significant discovery — Epic 4.3 spec gap:**
+- Story 4.3 requires coordinator notification "via the mechanism defined in the workflow config" — but that mechanism has never been defined. No channel, no format, no integration named. **Story 4.3 cannot be specced or implemented until the coordinator notification mechanism is defined with stakeholders.**
+- Stories 4.1 and 4.2 can proceed independently.
+
+---
+
+## Action Items
+
+### Process Improvements
+
+| Action | Owner | When |
+|--------|-------|------|
+| Integration stories must include failure mode analysis upfront — edge cases in ACs, not review | Alice + story creator | Starting Story 4.1 |
+| PRD requirements spanning multiple stories need an explicit owner story at epic planning | Alice | Before Epic 4 story creation |
+
+### Technical Debt (Epic 4 priority)
+
+| Item | Priority | When |
+|------|----------|------|
+| Per-request TokenMap scope — multi-turn masking gap | High | Before Story 4.2 |
+| `_write_log` silent exception swallow — add observability | Medium | Before more tool calls added |
+
+---
+
+## Epic 4 Preparation Tasks
+
+### Critical (must complete before Epic 4 starts)
+
+- [ ] Implement `GoogleDocsIntegration` — real `health_check()` + `fetch_tasks` action (blocks 4.1)
+- [ ] Define coordinator notification mechanism with stakeholders — channel, format, integration (blocks 4.3 spec)
+- [ ] Manual regression pass on full consultant workflow (Tableau data → chat → Smartsheet → Calendar)
+- [ ] Schedule stakeholder demo of Epic 3 deliverable
+
+### Parallel (during early Epic 4 stories)
+
+- [ ] Scaffold `DeclinedOpportunity` Alembic migration (needed before Story 4.3)
+- [ ] Address per-request TokenMap scope for multi-turn masking (before Story 4.2)
+- [ ] Add `_write_log` observability / non-silent failure path
+
+### Nice to Have
+
+- [ ] `confirm.params` server-side schema validation harness
+
+---
+
+## Readiness Assessment
+
+| Dimension | Status |
+|-----------|--------|
+| Testing & Quality | Backend solid (205 tests). Frontend has zero automated test coverage — manual regression pass needed before demo. |
+| Deployment | Local only. HTTPS/CORS hardening required before shared environment. |
+| Stakeholder Acceptance | Not yet demonstrated. Demo needed after prep sprint. |
+| Technical Health | Uncertain — manual regression pass will surface stability concerns. |
+| Epic 4 Blockers | `GoogleDocsIntegration` stub (4.1 blocker). Coordinator notification spec gap (4.3 blocker). |
+
+**Epic 3 is complete from a story perspective. Do not start Epic 4 Story 4.3 until the coordinator notification mechanism is defined.**
+
+---
+
+## Next Steps
+
+1. Execute preparation sprint:
+   - Implement `GoogleDocsIntegration`
+   - Define coordinator notification mechanism with stakeholders
+   - Manual regression pass on consultant workflow
+   - Schedule stakeholder demo
+
+2. Complete parallel prep items during early Epic 4 stories:
+   - `DeclinedOpportunity` migration
+   - TokenMap scope fix
+   - `_write_log` observability
+
+3. Begin Epic 4 — start with Story 4.1 (Open Work Board Ingestion) once `GoogleDocsIntegration` is implemented
+
+4. **IMPORTANT: Do not start Story 4.3 until coordinator notification mechanism is defined and 4.3 spec is updated**
+
+---
+
+Bob (Scrum Master): "Great session, CodeBeard. Epic 3 delivered the core POC. Let's use these insights to make Epic 4 even better."

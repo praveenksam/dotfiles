@@ -1,0 +1,617 @@
+# Story 2.1: Admin Config Panel & BYOM Credential Setup
+
+Status: review
+
+## Story
+
+As an **admin**,
+I want to configure the BYOM LLM provider and API credentials from the extension's admin panel,
+So that the agent has a valid, encrypted LLM provider before any consultant interaction begins.
+
+## Acceptance Criteria
+
+**Given** the extension is loaded and the admin opens the config panel
+**When** `AdminConfig.svelte` renders
+**Then** the panel displays fields for LLM provider selection (OpenAI / Anthropic) and API key input (FR20, FR21)
+
+**Given** an admin submits valid BYOM credentials via `POST /api/admin/credentials`
+**When** the backend processes the request
+**Then** the API key is encrypted using Fernet symmetric encryption before storage in `credential_store`
+**And** the plaintext key is never written to logs, response bodies, or any database column (FR19, NFR5)
+
+**Given** credentials are stored
+**When** the admin revisits the config panel
+**Then** the key field displays a masked placeholder (e.g., `••••••••`) — the raw value is never returned by any API endpoint (NFR5)
+
+**Given** invalid or missing credentials are submitted
+**When** `POST /api/admin/credentials` is called
+**Then** the API returns a `400` with a structured error — no stack trace or internal detail exposed
+
+---
+
+## Tasks / Subtasks
+
+### [x] Task 1 — Create `app/services/encryption.py` Fernet service (AC: 2)
+
+Create `autom9-backend/app/services/encryption.py`:
+
+```python
+from cryptography.fernet import Fernet, InvalidToken
+from app.core.config import settings
+
+
+def _fernet() -> Fernet:
+    return Fernet(settings.ENCRYPTION_KEY.encode())
+
+
+def encrypt(plaintext: str) -> str:
+    """Return Fernet-encrypted ciphertext as a UTF-8 string."""
+    return _fernet().encrypt(plaintext.encode()).decode()
+
+
+def decrypt(ciphertext: str) -> str:
+    """Decrypt a Fernet ciphertext. Raises InvalidToken on bad key or corruption."""
+    return _fernet().decrypt(ciphertext.encode()).decode()
+```
+
+- `cryptography` is already in `pyproject.toml` — do NOT add it again.
+- `settings.ENCRYPTION_KEY` must be a valid base64-urlsafe 32-byte Fernet key (44 chars).
+  - `Fernet(key)` will raise `ValueError` at startup if the key is malformed — this is intentional.
+- Do NOT log `plaintext` at any point in this module.
+
+---
+
+### [x] Task 2 — Create admin auth dependency `app/api/deps.py` (AC: all)
+
+Create `autom9-backend/app/api/deps.py`:
+
+```python
+from fastapi import Header, HTTPException
+from app.core.config import settings
+
+
+async def require_admin(x_autom9_token: str | None = Header(default=None)) -> None:
+    """Shared secret guard for all /api/admin/* routes."""
+    if x_autom9_token != settings.BACKEND_SECRET:
+        raise HTTPException(status_code=401, detail="Unauthorized")
+```
+
+- Header name `X-Autom9-Token` maps to `x_autom9_token` via FastAPI's header alias.
+- Returns `None` on success — used as `Depends(require_admin)`.
+- On mismatch or missing header → 401. Do NOT return 403 (admin panel not discoverable).
+
+---
+
+### [x] Task 3 — Create Pydantic schemas `app/schemas/credentials.py` (AC: 2, 3, 4)
+
+Create `autom9-backend/app/schemas/credentials.py`:
+
+```python
+from typing import Literal
+from pydantic import BaseModel, field_validator
+from app.schemas.status import Meta
+
+
+class CredentialUpsertRequest(BaseModel):
+    provider: Literal["openai", "anthropic"]
+    api_key: str
+
+    @field_validator("api_key")
+    @classmethod
+    def api_key_not_empty(cls, v: str) -> str:
+        if not v.strip():
+            raise ValueError("api_key must not be blank")
+        return v
+
+
+class CredentialUpsertResponse(BaseModel):
+    data: dict  # {"provider": "openai", "masked_key": "••••••••"}
+    meta: Meta
+
+
+class CredentialGetResponse(BaseModel):
+    data: dict  # {"provider": "openai", "masked_key": "••••••••"}
+    meta: Meta
+```
+
+- `Meta` is imported from `app.schemas.status` (already exists, has `request_id: str`).
+- `masked_key` in responses is always `"••••••••"` — never the real key or any prefix thereof.
+- `provider` is a `Literal` — sending `"google"` etc. returns 422 automatically.
+
+---
+
+### [x] Task 4 — Create API router `app/api/admin/credentials.py` (AC: 2, 3, 4)
+
+Create `autom9-backend/app/api/admin/__init__.py` (empty).
+
+Create `autom9-backend/app/api/admin/credentials.py`:
+
+```python
+import uuid
+from fastapi import APIRouter, Depends, HTTPException
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from app.api.deps import require_admin
+from app.db.deps import get_db
+from app.models.credential_store import CredentialStore
+from app.schemas.credentials import CredentialUpsertRequest, CredentialUpsertResponse, CredentialGetResponse
+from app.schemas.status import Meta
+from app.services.encryption import encrypt
+
+router = APIRouter(prefix="/api/admin/credentials", tags=["admin"])
+
+_ORG_ID = "default"
+_MASKED = "••••••••"
+
+
+@router.post("", status_code=200, response_model=CredentialUpsertResponse,
+             dependencies=[Depends(require_admin)])
+async def upsert_credential(
+    body: CredentialUpsertRequest,
+    db: AsyncSession = Depends(get_db),
+) -> CredentialUpsertResponse:
+    result = await db.execute(
+        select(CredentialStore).where(
+            CredentialStore.org_id == _ORG_ID,
+            CredentialStore.provider == body.provider,
+        )
+    )
+    row = result.scalar_one_or_none()
+    encrypted = encrypt(body.api_key)
+    if row is None:
+        row = CredentialStore(org_id=_ORG_ID, provider=body.provider, encrypted_key=encrypted)
+        db.add(row)
+    else:
+        row.encrypted_key = encrypted
+    await db.commit()
+    return CredentialUpsertResponse(
+        data={"provider": body.provider, "masked_key": _MASKED},
+        meta=Meta(request_id=str(uuid.uuid4())),
+    )
+
+
+@router.get("/{provider}", status_code=200, response_model=CredentialGetResponse,
+            dependencies=[Depends(require_admin)])
+async def get_credential(
+    provider: str,
+    db: AsyncSession = Depends(get_db),
+) -> CredentialGetResponse:
+    result = await db.execute(
+        select(CredentialStore).where(
+            CredentialStore.org_id == _ORG_ID,
+            CredentialStore.provider == provider,
+        )
+    )
+    row = result.scalar_one_or_none()
+    if row is None:
+        raise HTTPException(status_code=404, detail=f"No credentials for provider '{provider}'")
+    return CredentialGetResponse(
+        data={"provider": row.provider, "masked_key": _MASKED},
+        meta=Meta(request_id=str(uuid.uuid4())),
+    )
+```
+
+- `POST /api/admin/credentials` upserts — idempotent on repeated calls (update encrypted_key in place).
+- `GET /api/admin/credentials/{provider}` returns masked info only — no decrypt, no plaintext.
+- `_ORG_ID = "default"` — single-tenant v1, no multi-tenancy.
+- Use `db.commit()` in the router (no unit-of-work abstraction yet — keep it simple).
+
+---
+
+### [x] Task 5 — Wire admin router into `app/main.py` (AC: 2, 3)
+
+In `autom9-backend/app/main.py`, add:
+
+```python
+from app.api.admin.credentials import router as admin_credentials_router
+# ...
+app.include_router(admin_credentials_router)
+```
+
+Add this alongside the existing `sessions_router` and `status_router` includes. Do NOT remove or reorder existing routers.
+
+---
+
+### [x] Task 6 — Fix invalid ENCRYPTION_KEY in `tests/conftest.py` (AC: 2 — needed for tests to pass)
+
+**CRITICAL**: `"test-encryption-key"` is NOT a valid Fernet key. `Fernet(b"test-encryption-key")` raises `ValueError`. The encryption service will crash at test time unless this is fixed.
+
+In `autom9-backend/tests/conftest.py`, replace:
+
+```python
+os.environ.setdefault("ENCRYPTION_KEY", "test-encryption-key")
+```
+
+with:
+
+```python
+from cryptography.fernet import Fernet as _Fernet
+os.environ.setdefault("ENCRYPTION_KEY", _Fernet.generate_key().decode())
+```
+
+Place the `_Fernet` import BEFORE the `os.environ.setdefault` line (still before any app imports). This generates a fresh valid key per test session — safe because tests never decrypt stored keys.
+
+---
+
+### [x] Task 7 — Write API tests `tests/api/test_admin_credentials.py` (AC: 2, 3, 4)
+
+Create `autom9-backend/tests/api/test_admin_credentials.py`:
+
+```python
+import pytest
+from httpx import AsyncClient
+
+pytestmark = pytest.mark.asyncio(loop_scope="session")
+
+ADMIN_HEADERS = {"X-Autom9-Token": "test-backend-secret"}
+
+
+async def test_upsert_credential_returns_masked_key(client: AsyncClient):
+    response = await client.post(
+        "/api/admin/credentials",
+        json={"provider": "openai", "api_key": "sk-real-key"},
+        headers=ADMIN_HEADERS,
+    )
+    assert response.status_code == 200
+    body = response.json()
+    assert body["data"]["provider"] == "openai"
+    assert body["data"]["masked_key"] == "••••••••"
+    assert "sk-real-key" not in response.text
+    assert "request_id" in body["meta"]
+
+
+async def test_upsert_credential_requires_auth(client: AsyncClient):
+    response = await client.post(
+        "/api/admin/credentials",
+        json={"provider": "openai", "api_key": "sk-key"},
+    )
+    assert response.status_code == 401
+
+
+async def test_upsert_credential_rejects_blank_key(client: AsyncClient):
+    response = await client.post(
+        "/api/admin/credentials",
+        json={"provider": "openai", "api_key": "   "},
+        headers=ADMIN_HEADERS,
+    )
+    assert response.status_code == 422
+
+
+async def test_upsert_credential_rejects_unknown_provider(client: AsyncClient):
+    response = await client.post(
+        "/api/admin/credentials",
+        json={"provider": "google", "api_key": "key"},
+        headers=ADMIN_HEADERS,
+    )
+    assert response.status_code == 422
+
+
+async def test_upsert_is_idempotent(client: AsyncClient):
+    """Second upsert for same provider succeeds and key is updated."""
+    for key in ("sk-first", "sk-second"):
+        response = await client.post(
+            "/api/admin/credentials",
+            json={"provider": "anthropic", "api_key": key},
+            headers=ADMIN_HEADERS,
+        )
+        assert response.status_code == 200
+        assert response.json()["data"]["masked_key"] == "••••••••"
+
+
+async def test_get_credential_returns_masked(client: AsyncClient):
+    await client.post(
+        "/api/admin/credentials",
+        json={"provider": "openai", "api_key": "sk-for-get"},
+        headers=ADMIN_HEADERS,
+    )
+    response = await client.get("/api/admin/credentials/openai", headers=ADMIN_HEADERS)
+    assert response.status_code == 200
+    body = response.json()
+    assert body["data"]["masked_key"] == "••••••••"
+    assert "sk-for-get" not in response.text
+
+
+async def test_get_credential_404_when_missing(client: AsyncClient):
+    response = await client.get(
+        "/api/admin/credentials/nonexistent", headers=ADMIN_HEADERS
+    )
+    assert response.status_code == 404
+
+
+async def test_get_credential_requires_auth(client: AsyncClient):
+    response = await client.get("/api/admin/credentials/openai")
+    assert response.status_code == 401
+
+
+async def test_plaintext_never_in_db(client: AsyncClient, db_session):
+    """Verify stored value is encrypted, not the raw key."""
+    from sqlalchemy import select
+    from app.models.credential_store import CredentialStore
+
+    raw_key = "sk-must-not-appear-in-db"
+    await client.post(
+        "/api/admin/credentials",
+        json={"provider": "openai", "api_key": raw_key},
+        headers=ADMIN_HEADERS,
+    )
+    result = await db_session.execute(
+        select(CredentialStore).where(
+            CredentialStore.org_id == "default",
+            CredentialStore.provider == "openai",
+        )
+    )
+    row = result.scalar_one_or_none()
+    assert row is not None
+    assert raw_key not in row.encrypted_key
+    # Fernet ciphertext starts with "gAAAAA"
+    assert row.encrypted_key.startswith("gAAAAA")
+```
+
+---
+
+### [x] Task 8 — Create `AdminConfig.svelte` component (AC: 1, 3)
+
+Create `autom9-extension/src/components/AdminConfig.svelte`:
+
+```svelte
+<script lang="ts">
+  import { apiFetch } from '../lib/api';
+
+  let provider = $state<'openai' | 'anthropic'>('openai');
+  let apiKey = $state('');
+  let saving = $state(false);
+  let saved = $state(false);
+  let errorMsg = $state('');
+
+  async function handleSubmit(e: SubmitEvent) {
+    e.preventDefault();
+    saving = true;
+    saved = false;
+    errorMsg = '';
+    try {
+      await apiFetch('/api/admin/credentials', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ provider, api_key: apiKey }),
+      });
+      saved = true;
+      apiKey = '';
+    } catch (err) {
+      errorMsg = err instanceof Error ? err.message : 'Failed to save credentials';
+    } finally {
+      saving = false;
+    }
+  }
+</script>
+
+<form onsubmit={handleSubmit} class="admin-config">
+  <h2>BYOM Credential Setup</h2>
+
+  <label>
+    LLM Provider
+    <select bind:value={provider}>
+      <option value="openai">OpenAI</option>
+      <option value="anthropic">Anthropic</option>
+    </select>
+  </label>
+
+  <label>
+    API Key
+    <input
+      type="password"
+      bind:value={apiKey}
+      placeholder="Paste API key here"
+      autocomplete="off"
+      required
+    />
+  </label>
+
+  {#if saved}
+    <p class="success">Credentials saved.</p>
+  {/if}
+  {#if errorMsg}
+    <p class="error">{errorMsg}</p>
+  {/if}
+
+  <button type="submit" disabled={saving}>
+    {saving ? 'Saving…' : 'Save Credentials'}
+  </button>
+</form>
+```
+
+- Svelte 5 runes syntax: `$state()` for reactive variables.
+- `type="password"` ensures browser never autofills or logs the key.
+- On success: clear `apiKey` and show confirmation — do NOT display the stored key.
+- `apiFetch` is already in `src/lib/api.ts` — use it, don't re-implement fetch.
+- **IMPORTANT**: `apiFetch` does NOT automatically inject `X-Autom9-Token`. The admin panel must pass the token. For now, the admin token is a dev-time concern (not surfaced in UI yet — this is v1 shell). Tests will call the API directly with the header.
+
+---
+
+### [x] Task 9 — Wire `AdminConfig.svelte` into `App.svelte` behind `?admin=1` (AC: 1)
+
+In `autom9-extension/src/App.svelte`, add admin panel detection and conditional render:
+
+```typescript
+// Near the top of <script>
+const isAdminView = new URLSearchParams(window.location.search).has('admin');
+```
+
+Then in the template, add after the status bar or in the main content area:
+
+```svelte
+{#if isAdminView}
+  <AdminConfig />
+{/if}
+```
+
+And import:
+```typescript
+import AdminConfig from './components/AdminConfig.svelte';
+```
+
+- `?admin=1` (or just `?admin`) enables the panel — `URLSearchParams.has('admin')` returns true for both.
+- Do NOT add any login/password gate in v1 — the `X-Autom9-Token` header is the auth layer, handled by the API.
+- Do NOT remove or wrap existing App.svelte content — append the admin panel conditionally.
+
+---
+
+### Review Findings
+
+#### Decision-Needed
+
+- [x] [Review][Decision] D1: AC4 specifies "400 with structured error" but Pydantic validation returns 422 — resolved: accept 422 as correct HTTP semantics per RFC; tests already assert 422. No code change.
+
+#### Patches
+
+- [ ] [Review][Patch] P1: Race condition in upsert — TOCTOU between SELECT and INSERT; concurrent requests hit UniqueConstraint → unhandled IntegrityError → 500. Catch `IntegrityError` and retry or swallow. [app/api/admin/credentials.py:25-38]
+- [ ] [Review][Patch] P2: Timing-safe comparison not used for BACKEND_SECRET — use `hmac.compare_digest()` instead of `!=`. [app/api/deps.py:8]
+- [ ] [Review][Patch] P3: GET `/{provider}` path param accepts any string — no Literal/Enum constraint (POST correctly uses `Literal["openai","anthropic"]`). [app/api/admin/credentials.py:46]
+- [ ] [Review][Patch] P4: `upsert_credential` calls `await db.commit()` explicitly — inconsistent with project pattern (sessions.py uses `db.flush()`, `get_db` handles commit at line 12 of deps.py). Remove explicit commit; let `get_db` handle it. [app/api/admin/credentials.py:38]
+- [ ] [Review][Patch] P5: HTTPException responses use `{"detail": "..."}` but `apiFetch` parser expects `{"error": {"code": ..., "message": ...}}` — 401/404 errors always fall back to generic message in UI. Add `HTTPException` handler to `main.py` wrapping the standard error envelope. [app/main.py, app/api/deps.py:9, app/api/admin/credentials.py:58]
+- [ ] [Review][Patch] P6: No max length on `api_key` — arbitrarily large values accepted, encrypted, and stored. Add `max_length=512` to the `api_key` field. [app/schemas/credentials.py:11]
+- [ ] [Review][Patch] P7: `_fernet()` re-instantiates `Fernet` on every call — create module-level singleton `_FERNET = Fernet(settings.ENCRYPTION_KEY.encode())`. [app/services/encryption.py:6-7]
+- [ ] [Review][Patch] P8: `ENCRYPTION_KEY` not validated at startup — invalid key silently passes `Settings()` and only fails at first encrypt call (500 at runtime). Add `@field_validator` calling `Fernet(v.encode())` in `config.py`. [app/core/config.py:11]
+- [ ] [Review][Patch] P9: AC3 gap — `AdminConfig.svelte` has no `onMount` GET call to show masked key state when credentials already exist; admin sees empty form on revisit with no signal that a key is stored. [autom9-extension/src/components/AdminConfig.svelte]
+
+#### Deferred
+
+- [x] [Review][Defer] Admin panel accessible to any Tableau user via `?admin` URL param — v1 design, backend token protects data [App.svelte:10] — deferred, v1 single-tenant design per story spec
+- [x] [Review][Defer] Missing `X-Autom9-Token` in frontend POST — always 401 in real deployment — deferred, story spec explicitly calls this a v1 dev-time concern
+- [x] [Review][Defer] No rate limiting on admin token brute-force — infrastructure concern, not code [app/api/deps.py] — deferred, pre-existing
+- [x] [Review][Defer] CORS `allow_methods=["*"]` / `allow_headers=["*"]` overly permissive — pre-existing config [app/main.py:38-40] — deferred, pre-existing
+- [x] [Review][Defer] `IntegrationError` handler leaks details via `str(exc)` — pre-existing story 1.3 [app/main.py:51] — deferred, pre-existing
+- [x] [Review][Defer] `db_session` savepoint restart listener fragility with asyncpg — pre-existing story 1.3 [tests/conftest.py:45] — deferred, pre-existing
+- [x] [Review][Defer] `pytestmark loop_scope="session"` + function-scoped fixtures pattern — pre-existing story 1.3 [tests/api/test_admin_credentials.py:4] — deferred, pre-existing
+- [x] [Review][Defer] `ENCRYPTION_KEY` env var pre-set risk in CI silently overrides test key — documentation concern [tests/conftest.py:7] — deferred, low risk
+- [x] [Review][Defer] No `created_at`/`updated_at` on `credential_store` — audit trail gap [app/models/credential_store.py] — deferred, model design concern for later Epic
+- [x] [Review][Defer] No test for `decrypt()` path or `InvalidToken` on key mismatch — decrypt not used yet [app/services/encryption.py:16] — deferred, no consumer yet
+- [x] [Review][Defer] `apiFetch` injects `Content-Type: application/json` on GET requests — pre-existing api.ts behavior [autom9-extension/src/lib/api.ts:30-33] — deferred, pre-existing
+- [x] [Review][Defer] API key transmitted cleartext frontend→backend — TLS infrastructure concern [AdminConfig.svelte:16-19] — deferred, infrastructure
+
+---
+
+### [x] Task 10 — Build validation
+
+Run `cd autom9-extension && npm run build` — must succeed with zero TypeScript errors.
+
+Run `cd autom9-backend && python -m pytest tests/api/test_admin_credentials.py -v` — all tests must pass.
+
+Run `cd autom9-backend && python -m pytest tests/ -v` — full suite must pass (no regressions in status or sessions tests).
+
+---
+
+## Dev Notes
+
+### Encryption Key Requirements
+
+`ENCRYPTION_KEY` in `.env` MUST be a valid Fernet key:
+```python
+from cryptography.fernet import Fernet
+print(Fernet.generate_key().decode())  # use this output
+```
+Fernet keys are 44 characters of base64url. Any other value causes `ValueError` on first encrypt/decrypt call.
+
+The conftest fix (Task 6) is **mandatory** — tests will fail at import time without it because `Fernet("test-encryption-key")` is invalid.
+
+### Admin Auth Pattern
+
+`X-Autom9-Token: <BACKEND_SECRET>` shared secret. This is the v1 admin auth pattern per ARC-2. No JWT, no session — simple header comparison. In tests, `BACKEND_SECRET="test-backend-secret"` (already set in conftest), so use `{"X-Autom9-Token": "test-backend-secret"}` in test headers.
+
+### Single-Tenant v1
+
+`org_id = "default"` hardcoded everywhere in Epic 2. No multi-tenancy until explicitly designed. Do NOT add `org_id` as a request parameter.
+
+### Upsert Pattern
+
+`CredentialStore` has `UniqueConstraint("org_id", "provider")`. The router does SELECT then INSERT-or-UPDATE. Do NOT use PostgreSQL `ON CONFLICT` — keep it portable and explicit for test clarity. The upsert is in the router, not in a service layer (no premature abstraction).
+
+### Masked Key Response
+
+Always return `"••••••••"` (8 bullet chars, U+2022) — not a truncated prefix, not a hash, always the same fixed mask. This prevents any fingerprinting of key length or content.
+
+### Files to Create
+
+```
+autom9-backend/
+  app/
+    services/
+      __init__.py          ← empty
+      encryption.py        ← Task 1
+    api/
+      deps.py              ← Task 2
+      admin/
+        __init__.py        ← empty
+        credentials.py     ← Task 4
+  schemas/
+    credentials.py         ← Task 3
+  tests/
+    api/
+      test_admin_credentials.py  ← Task 7
+autom9-extension/
+  src/
+    components/
+      AdminConfig.svelte   ← Task 8
+```
+
+### Files to Modify
+
+```
+autom9-backend/
+  app/main.py                     ← Task 5: add admin_credentials_router
+  tests/conftest.py               ← Task 6: fix ENCRYPTION_KEY
+autom9-extension/
+  src/App.svelte                  ← Task 9: admin panel wire-up
+```
+
+### Architecture References
+
+- [Source: architecture.md#ARC-11] — `CredentialStore` model schema (already created in Epic 1)
+- [Source: architecture.md#ARC-12] — BYOM credential pattern, Fernet encryption
+- [Source: epics.md#Story 2.1] — AC and dev notes
+- [Source: prd.md#FR19, FR21, NFR5] — no plaintext in logs/responses, org-level config
+
+---
+
+## Dev Agent Record
+
+### Agent Model Used
+
+claude-sonnet-4-6
+
+### Debug Log References
+
+None — implementation proceeded without blockers.
+
+### Completion Notes List
+
+- Encryption service uses `Fernet(settings.ENCRYPTION_KEY.encode())` instantiated per-call; valid 44-char base64url key required.
+- `require_admin` dep raises 401 on missing or wrong `X-Autom9-Token` header; used via `dependencies=[Depends(require_admin)]` on both routes.
+- Upsert is SELECT-then-INSERT-or-UPDATE; no PostgreSQL ON CONFLICT used (keeps it portable and test-clear).
+- `_MASKED = "••••••••"` constant (8 × U+2022); never a truncated prefix or hash.
+- `test_plaintext_never_in_db` verifies Fernet ciphertext prefix `gAAAAA` in stored column.
+- conftest fixed: `_Fernet.generate_key().decode()` generates fresh valid key per test session.
+- `AdminConfig.svelte` uses Svelte 5 `$state()` runes; `type="password"` input prevents browser logging.
+- `isAdminView` uses `URLSearchParams.has('admin')` — works for both `?admin` and `?admin=1`.
+- All 26 tests pass (9 new + 17 existing). Build clean, zero TS errors.
+
+### Change Log
+
+- 2026-04-22: Story 2.1 implemented — admin credentials API (encrypt/upsert/get), AdminConfig.svelte panel, conftest ENCRYPTION_KEY fix.
+
+### File List
+
+**Created:**
+- `autom9-backend/app/services/__init__.py`
+- `autom9-backend/app/services/encryption.py`
+- `autom9-backend/app/api/deps.py`
+- `autom9-backend/app/api/admin/__init__.py`
+- `autom9-backend/app/api/admin/credentials.py`
+- `autom9-backend/app/schemas/credentials.py`
+- `autom9-backend/tests/api/test_admin_credentials.py`
+- `autom9-extension/src/components/AdminConfig.svelte`
+
+**Modified:**
+- `autom9-backend/app/main.py` — added admin_credentials_router
+- `autom9-backend/tests/conftest.py` — fixed ENCRYPTION_KEY to valid Fernet key
+- `autom9-extension/src/App.svelte` — added AdminConfig import, isAdminView, conditional render

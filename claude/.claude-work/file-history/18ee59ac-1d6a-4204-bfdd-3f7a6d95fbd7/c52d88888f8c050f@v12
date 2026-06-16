@@ -1,0 +1,85 @@
+---
+title: 'Context Selection from Tableau'
+type: 'feature'
+slug: '4-4-context-selection-from-tableau'
+created: '2026-05-01'
+status: 'wip'
+baseline_commit: '35e2d71'
+---
+
+<frozen-after-approval reason="human-owned intent — do not modify unless human renegotiates">
+
+## Intent
+
+**Problem:** The `DataPanel` reads Tableau worksheet rows but surfaces only a scalar `available_days: number` to the agent. This is too narrow — the underlying data contains rich row-level context (e.g. "available" planning days as individual rows identified by a status column/value) that the agent and capacity tool cannot see.
+
+**Approach:** Replace the scalar `available_days` model with a generic `context_selection: list[dict]` payload. The consultant selects specific rows from the `DataPanel` via checkboxes; those rows are sent to the backend as `context_selection`. The backend derives `effective_available_days` from `len(context_selection)` when no scalar is provided. The selected rows are also injected into the LLM conversation as context so the agent can reason about them directly.
+
+Which rows are selectable is driven by two new `DataPanelConfig` fields (`availability_column`, `availability_value`). Rows where `row[availability_column] == availability_value` are highlighted and checkable; all others are display-only.
+
+## Boundaries & Constraints
+
+**Always:**
+- `available_days` stays in `ChatRequest` (optional, default None) — existing tests must continue to pass.
+- `context_selection` is `list[dict] | None`, defaulting to `None` — backend tolerates absence.
+- `effective_available_days` derivation happens in `_handle_message`, not inside `_run_check_capacity` — handler signature unchanged.
+- `availability_column` and `availability_value` are both optional in `DataPanelConfig` — if absent, no rows are marked selectable (all rows display-only, no checkboxes shown).
+- Context injection into LLM messages: only when `context_selection` is non-empty; injected as a `user` role message before the consultant's turn.
+
+**Never:**
+- Do not remove `extractAvailableDays` or `availableDays` from `data.svelte.ts` — other code may reference them; keep but leave unused by DataPanel.
+- Do not change `_run_check_capacity` signature or internal logic.
+- Do not change how `check_capacity` in `capacity.py` works.
+- Do not send `available_days` from `ChatPanel.svelte` anymore — replaced by `context_selection`.
+
+## I/O & Edge-Case Matrix
+
+| Scenario | Input / State | Expected Output / Behavior |
+|----------|--------------|---------------------------|
+| Consultant selects 3 rows | `context_selection: [{...}, {...}, {...}]`, `available_days: null` | `effective_available_days = 3`; injected context message sent to LLM; capacity check uses 3 days |
+| Consultant selects 0 rows | `context_selection: []` | `effective_available_days = null`; capacity check raises 503 (Tableau data unavailable) |
+| `context_selection` absent | `context_selection: null`, `available_days: 5` | backward compat: `effective_available_days = 5` |
+| Both absent | `context_selection: null`, `available_days: null` | `effective_available_days = null`; capacity check raises 503 |
+| `availability_column/value` not configured | Config missing those fields | No checkboxes shown; all rows display-only; `selectedRows = []` |
+
+</frozen-after-approval>
+
+## Code Map
+
+- `autom9-backend/app/schemas/chat.py` — add `context_selection: list[dict] | None = None` to `ChatRequest`; keep `available_days`
+- `autom9-backend/app/config/workflow_schema.py` — add `availability_column: str | None = None` and `availability_value: str | None = None` to `DataPanelConfig`
+- `autom9-backend/app/api/chat.py` — in `_handle_message`: derive `effective_available_days`, inject context_selection into messages, pass `effective_available_days` to handlers
+- `autom9-extension/src/stores/data.svelte.ts` — add `extractAvailableRows()`, add `selectedRows` state to `DataStore`
+- `autom9-extension/src/components/DataPanel.svelte` — read `availability_column`+`availability_value` from config, render checkboxes on matching rows
+- `autom9-extension/src/components/ChatPanel.svelte` — send `context_selection: dataStore.selectedRows` instead of `available_days`
+- `autom9-backend/tests/api/test_chat.py` — add tests for context_selection capacity path
+
+## Tasks & Acceptance
+
+**Execution:**
+
+- [ ] `autom9-backend/app/schemas/chat.py` — add `context_selection: list[dict] | None = None` field to `ChatRequest` after `available_days` — allows frontend to send selected Tableau rows as generic context payload
+- [ ] `autom9-backend/app/config/workflow_schema.py` — add `availability_column: str | None = None` and `availability_value: str | None = None` to `DataPanelConfig` — drives which rows are selectable in the frontend
+- [ ] `autom9-backend/app/api/chat.py` — in `_handle_message`:
+  1. Accept `context_selection: list[dict] | None` from `body` (already in `ChatRequest` after task above)
+  2. Compute `effective_available_days = available_days if available_days is not None else (len(context_selection) if context_selection else None)`
+  3. When `context_selection` is non-empty, insert `{"role": "user", "content": f"[Selected context]: {json.dumps(context_selection, default=str)}"}` into `messages` just before the consultant's user turn
+  4. Pass `effective_available_days` (not `available_days`) to `internal_fn` at dispatch site
+- [ ] `autom9-extension/src/stores/data.svelte.ts` — add `export function extractAvailableRows(rows, availabilityColumn, availabilityValue)` that returns rows where `row[availabilityColumn] == availabilityValue`; add `selectedRows = $state<WorksheetRow[]>([])` to `DataStore`
+- [ ] `autom9-extension/src/components/DataPanel.svelte` — extend `WorksheetConfig` to include `availabilityColumn: string | null` and `availabilityValue: string | null`; read from `/api/config/workflow` response; call `extractAvailableRows` to identify selectable rows; render checkbox column for selectable rows bound to `dataStore.selectedRows`; non-matching rows display-only
+- [ ] `autom9-extension/src/components/ChatPanel.svelte` — replace `available_days: dataStore.availableDays` with `context_selection: dataStore.selectedRows` in `sendMessage` body
+- [ ] `autom9-backend/tests/api/test_chat.py` — add `_CONFIG_WITH_CHECK_CAPACITY_TOOL` (already exists — reuse) + 2 new tests: `test_check_capacity_via_context_selection` (3 rows → capacity check passes), `test_check_capacity_empty_context_selection_returns_503` (empty list → 503)
+
+**Acceptance Criteria:**
+- Given `DataPanelConfig` has `availability_column` and `availability_value` set, when worksheet rows load, then rows matching that column/value show checkboxes; non-matching rows have no checkbox.
+- Given consultant checks 3 rows and sends a message, when backend receives the request, then `context_selection` contains 3 dicts and `effective_available_days = 3`.
+- Given `context_selection` is non-empty, when `_handle_message` builds messages, then a `[Selected context]` user message appears before the consultant's turn.
+- Given `context_selection` is empty (`[]`) and `available_days` is null, when `check_capacity` handler runs, then HTTP 503 is returned.
+- Given `available_days` is set and `context_selection` is null, when handler runs, then `available_days` is used (backward compat, existing tests pass).
+
+## Verification
+
+**Commands:**
+- `cd autom9-backend && uv run pytest tests/api/test_chat.py -v` — expected: all existing tests pass + 2 new tests pass
+- `cd autom9-backend && uv run python -c "from app.schemas.chat import ChatRequest; print(ChatRequest.model_fields['context_selection'])"` — expected: field info printed, no import error
+- `cd autom9-backend && uv run python -c "from app.config.workflow_schema import DataPanelConfig; print(DataPanelConfig.model_fields)"` — expected: `availability_column` and `availability_value` in output

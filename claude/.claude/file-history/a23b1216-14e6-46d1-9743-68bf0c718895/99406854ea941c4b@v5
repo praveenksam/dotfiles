@@ -1,0 +1,488 @@
+# Story 2.5: Admin Interaction Log Access
+
+Status: done
+
+## Story
+
+As an **admin**,
+I want to retrieve masked agent interaction logs and resolve a session ID to a consultant identity,
+So that I can diagnose failed tool calls, error patterns, and latency issues.
+
+## Acceptance Criteria
+
+**Given** agent interactions have occurred
+**When** `GET /api/admin/logs` is called with optional filters (`session_id`, time range)
+**Then** log entries are returned containing: `id`, `session_id`, `masked_input`, `masked_output`, `tool_calls`, `latency_ms`, `timestamp`
+**And** no entry contains consultant names, client identifiers, engagement IDs, or raw API keys (FR24, NFR7)
+
+**Given** an admin needs to identify which consultant a session belongs to
+**When** `GET /api/admin/sessions/{session_id}` is called
+**Then** the `tableau_user_id` for that session is returned (ARC-14)
+**And** this endpoint is restricted to admin-authenticated requests only
+
+**Given** integration status checks have run
+**When** `GET /api/admin/logs` is queried
+**Then** structured JSON log entries from status checks are observable in the backend log stream — no PII surfaced (FR25)
+
+**Given** a session_id that does not exist in the `sessions` table
+**When** `GET /api/admin/sessions/{session_id}` is called
+**Then** 404 is returned
+
+---
+
+## Tasks / Subtasks
+
+### [x] Task 1 — Create `app/schemas/logs.py` (new file)
+
+Create `autom9-backend/app/schemas/logs.py`:
+
+```python
+from datetime import datetime
+from uuid import UUID
+
+from pydantic import BaseModel
+
+from app.schemas.status import Meta
+
+
+class LogEntry(BaseModel):
+    id: UUID
+    session_id: UUID
+    masked_input: str
+    masked_output: str | None
+    tool_calls: str | None
+    latency_ms: int | None
+    timestamp: datetime
+
+
+class LogsResponse(BaseModel):
+    data: list[LogEntry]
+    meta: Meta
+
+
+class SessionLookupData(BaseModel):
+    session_id: UUID
+    tableau_user_id: str
+
+
+class SessionLookupResponse(BaseModel):
+    data: SessionLookupData
+    meta: Meta
+```
+
+**Why a new file:** `app/schemas/status.py` holds integration health schemas; `app/schemas/sessions.py` holds session creation schemas. Log retrieval schemas are distinct enough to warrant their own file. Follow the existing pattern: `credentials.py`, `config.py`, `sessions.py`.
+
+---
+
+### [x] Task 2 — Create `app/api/admin/logs.py` with two endpoints
+
+Create `autom9-backend/app/api/admin/logs.py`:
+
+```python
+import uuid
+from datetime import datetime
+from typing import Annotated
+from uuid import UUID
+
+from fastapi import APIRouter, Depends, HTTPException, Query
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from app.api.deps import require_admin
+from app.db.deps import get_db
+from app.models.interaction_log import InteractionLog
+from app.models.session import Session as UserSession
+from app.schemas.logs import LogEntry, LogsResponse, SessionLookupData, SessionLookupResponse
+from app.schemas.status import Meta
+
+router = APIRouter(prefix="/api/admin", tags=["admin"])
+
+_MAX_LOGS = 100  # default page size cap; overridable via ?limit=
+
+
+@router.get(
+    "/logs",
+    response_model=LogsResponse,
+    dependencies=[Depends(require_admin)],
+)
+async def get_logs(
+    session_id: Annotated[UUID | None, Query()] = None,
+    since: Annotated[datetime | None, Query()] = None,
+    until: Annotated[datetime | None, Query()] = None,
+    limit: Annotated[int, Query(ge=1, le=500)] = _MAX_LOGS,
+    db: AsyncSession = Depends(get_db),
+) -> LogsResponse:
+    """
+    Admin-only masked interaction log retrieval.
+    Returns entries from interaction_logs table ordered newest-first.
+    No PII, no credentials in any entry (FR24, NFR7).
+    Optional query params: session_id (UUID), since/until (ISO datetime), limit (int 1–500).
+    """
+    stmt = (
+        select(InteractionLog)
+        .order_by(InteractionLog.timestamp.desc())
+        .limit(limit)
+    )
+    if session_id is not None:
+        stmt = stmt.where(InteractionLog.session_id == session_id)
+    if since is not None:
+        stmt = stmt.where(InteractionLog.timestamp >= since)
+    if until is not None:
+        stmt = stmt.where(InteractionLog.timestamp <= until)
+
+    result = await db.execute(stmt)
+    rows = result.scalars().all()
+
+    entries = [
+        LogEntry(
+            id=row.id,
+            session_id=row.session_id,
+            masked_input=row.masked_input,
+            masked_output=row.masked_output,
+            tool_calls=row.tool_calls,
+            latency_ms=row.latency_ms,
+            timestamp=row.timestamp,
+        )
+        for row in rows
+    ]
+
+    return LogsResponse(
+        data=entries,
+        meta=Meta(request_id=str(uuid.uuid4())),
+    )
+
+
+@router.get(
+    "/sessions/{session_id}",
+    response_model=SessionLookupResponse,
+    dependencies=[Depends(require_admin)],
+)
+async def get_session(
+    session_id: UUID,
+    db: AsyncSession = Depends(get_db),
+) -> SessionLookupResponse:
+    """
+    Admin-only session registry lookup (ARC-14).
+    Returns tableau_user_id for a given session_id.
+    tableau_user_id IS PII — this endpoint must remain admin-only forever.
+    """
+    result = await db.execute(
+        select(UserSession).where(UserSession.session_id == session_id)
+    )
+    session = result.scalar_one_or_none()
+    if session is None:
+        raise HTTPException(status_code=404, detail=f"Session '{session_id}' not found")
+
+    return SessionLookupResponse(
+        data=SessionLookupData(
+            session_id=session.session_id,
+            tableau_user_id=session.tableau_user_id,
+        ),
+        meta=Meta(request_id=str(uuid.uuid4())),
+    )
+```
+
+**Critical decisions:**
+- `Session as UserSession` import alias — avoids collision with `sqlalchemy.orm.Session` (same alias used in `app/api/sessions.py:8`)
+- `select(InteractionLog).order_by(...).limit(limit)` — SQLAlchemy 2.x style, consistent with `credentials.py`
+- Query params declared as `Annotated[T | None, Query()]` — FastAPI best practice, consistent with existing `x_autom9_session: Annotated[str | None, Header()]` pattern
+- `limit` bound to 1–500 via `Query(ge=1, le=500)` — prevents unbounded result sets, no DB pagination needed for v1
+- No commit anywhere — read-only; `get_db` dependency owns the session lifecycle
+
+---
+
+### [x] Task 3 — Register router in `app/main.py`
+
+Add import (after existing admin imports):
+```python
+from app.api.admin.logs import router as admin_logs_router
+```
+
+Add include (after `workflow_config_router`):
+```python
+app.include_router(admin_logs_router)
+```
+
+---
+
+### [x] Task 4 — Write tests in `tests/api/test_admin_logs.py`
+
+Create `autom9-backend/tests/api/test_admin_logs.py`:
+
+```python
+from datetime import datetime, timezone, timedelta
+from uuid import uuid4
+
+import pytest
+from httpx import AsyncClient
+
+from app.models.interaction_log import InteractionLog
+from app.models.session import Session as UserSession
+
+pytestmark = pytest.mark.asyncio(loop_scope="session")
+
+ADMIN_HEADERS = {"X-Autom9-Token": "test-backend-secret"}
+
+
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
+
+
+async def _create_session(db_session, tableau_user_id: str = "user@example.com") -> UserSession:
+    session = UserSession(session_id=uuid4(), tableau_user_id=tableau_user_id)
+    db_session.add(session)
+    await db_session.flush()
+    return session
+
+
+async def _create_log(db_session, session_id, *, masked_input: str = "CONSULTANT_X asked about CLIENT_A") -> InteractionLog:
+    log = InteractionLog(
+        session_id=session_id,
+        masked_input=masked_input,
+        masked_output="Agent responded with ENGAGEMENT_001 plan",
+        tool_calls=None,
+        latency_ms=350,
+    )
+    db_session.add(log)
+    await db_session.flush()
+    return log
+
+
+# ---------------------------------------------------------------------------
+# Auth — both endpoints require admin
+# ---------------------------------------------------------------------------
+
+
+async def test_get_logs_requires_admin(client: AsyncClient):
+    response = await client.get("/api/admin/logs")
+    assert response.status_code == 401
+
+
+async def test_get_session_requires_admin(client: AsyncClient):
+    response = await client.get(f"/api/admin/sessions/{uuid4()}")
+    assert response.status_code == 401
+
+
+# ---------------------------------------------------------------------------
+# GET /api/admin/logs — basic
+# ---------------------------------------------------------------------------
+
+
+async def test_get_logs_empty_returns_list(client: AsyncClient):
+    response = await client.get("/api/admin/logs", headers=ADMIN_HEADERS)
+    assert response.status_code == 200
+    body = response.json()
+    assert "data" in body
+    assert "meta" in body
+    assert isinstance(body["data"], list)
+    assert "request_id" in body["meta"]
+
+
+async def test_get_logs_returns_seeded_entry(client: AsyncClient, db_session):
+    session = await _create_session(db_session)
+    log = await _create_log(db_session, session.session_id)
+
+    response = await client.get("/api/admin/logs", headers=ADMIN_HEADERS)
+    assert response.status_code == 200
+    entries = response.json()["data"]
+    ids = [e["id"] for e in entries]
+    assert str(log.id) in ids
+
+
+async def test_get_logs_entry_has_required_fields(client: AsyncClient, db_session):
+    session = await _create_session(db_session)
+    await _create_log(db_session, session.session_id)
+
+    response = await client.get("/api/admin/logs", headers=ADMIN_HEADERS)
+    assert response.status_code == 200
+    entry = response.json()["data"][0]
+    assert "id" in entry
+    assert "session_id" in entry
+    assert "masked_input" in entry
+    assert "masked_output" in entry
+    assert "tool_calls" in entry
+    assert "latency_ms" in entry
+    assert "timestamp" in entry
+
+
+# ---------------------------------------------------------------------------
+# GET /api/admin/logs — filter by session_id
+# ---------------------------------------------------------------------------
+
+
+async def test_get_logs_filter_by_session_id(client: AsyncClient, db_session):
+    session_a = await _create_session(db_session, "user_a@example.com")
+    session_b = await _create_session(db_session, "user_b@example.com")
+    log_a = await _create_log(db_session, session_a.session_id, masked_input="log for A")
+    await _create_log(db_session, session_b.session_id, masked_input="log for B")
+
+    response = await client.get(
+        f"/api/admin/logs?session_id={session_a.session_id}",
+        headers=ADMIN_HEADERS,
+    )
+    assert response.status_code == 200
+    entries = response.json()["data"]
+    assert all(e["session_id"] == str(session_a.session_id) for e in entries)
+    assert any(e["id"] == str(log_a.id) for e in entries)
+
+
+# ---------------------------------------------------------------------------
+# GET /api/admin/logs — limit
+# ---------------------------------------------------------------------------
+
+
+async def test_get_logs_limit_respected(client: AsyncClient, db_session):
+    session = await _create_session(db_session)
+    for _ in range(3):
+        await _create_log(db_session, session.session_id)
+
+    response = await client.get("/api/admin/logs?limit=2", headers=ADMIN_HEADERS)
+    assert response.status_code == 200
+    assert len(response.json()["data"]) <= 2
+
+
+async def test_get_logs_limit_invalid_returns_422(client: AsyncClient):
+    response = await client.get("/api/admin/logs?limit=0", headers=ADMIN_HEADERS)
+    assert response.status_code == 422
+
+
+# ---------------------------------------------------------------------------
+# GET /api/admin/logs — no PII in response
+# ---------------------------------------------------------------------------
+
+
+async def test_get_logs_response_contains_no_raw_pii(client: AsyncClient, db_session):
+    """masked_input must not contain real names — this tests the contract, not masking logic."""
+    session = await _create_session(db_session, "real.user@example.com")
+    await _create_log(db_session, session.session_id, masked_input="CONSULTANT_1 asked about CLIENT_A")
+
+    response = await client.get("/api/admin/logs", headers=ADMIN_HEADERS)
+    # tableau_user_id must NOT appear in log entries
+    assert "real.user@example.com" not in response.text
+
+
+# ---------------------------------------------------------------------------
+# GET /api/admin/sessions/{session_id}
+# ---------------------------------------------------------------------------
+
+
+async def test_get_session_returns_tableau_user_id(client: AsyncClient, db_session):
+    session = await _create_session(db_session, "admin_target@example.com")
+
+    response = await client.get(
+        f"/api/admin/sessions/{session.session_id}",
+        headers=ADMIN_HEADERS,
+    )
+    assert response.status_code == 200
+    body = response.json()
+    assert body["data"]["session_id"] == str(session.session_id)
+    assert body["data"]["tableau_user_id"] == "admin_target@example.com"
+    assert "request_id" in body["meta"]
+
+
+async def test_get_session_unknown_returns_404(client: AsyncClient):
+    response = await client.get(
+        f"/api/admin/sessions/{uuid4()}",
+        headers=ADMIN_HEADERS,
+    )
+    assert response.status_code == 404
+
+
+async def test_get_session_invalid_uuid_returns_422(client: AsyncClient):
+    response = await client.get(
+        "/api/admin/sessions/not-a-uuid",
+        headers=ADMIN_HEADERS,
+    )
+    assert response.status_code == 422
+```
+
+---
+
+## Dev Notes
+
+### Architecture Context
+
+- **`InteractionLog`** in `app/models/interaction_log.py` — already exists. Fields: `id (UUID PK)`, `session_id (UUID FK → sessions.session_id)`, `masked_input (str)`, `masked_output (str|None)`, `tool_calls (str|None)`, `latency_ms (int|None)`, `timestamp (datetime tz-aware)`. Index on `session_id`.
+- **`Session`** in `app/models/session.py` — already exists. Fields: `session_id (UUID PK)`, `tableau_user_id (str)`, `started_at (datetime tz-aware)`.
+- **No migration needed** — both tables exist in `0001_initial_schema.py`.
+- **`app/api/admin/` directory** already exists with `credentials.py` and `config.py`.
+- **`app/schemas/` directory** already has `credentials.py`, `config.py`, `sessions.py`, `status.py` — add `logs.py` following the same pattern.
+
+### Critical Import Alias
+
+`from app.models.session import Session as UserSession` — **mandatory alias**. The name `Session` collides with `sqlalchemy.orm.Session`. The existing `app/api/sessions.py:8` already uses this alias. Use the same.
+
+### FR25 Scope Decision
+
+The `GET /api/admin/logs` endpoint queries only the `interaction_logs` DB table. Integration status check events (from `GET /api/status` and `POST /api/integrations/{name}/test`) are emitted via `logger.info()` to the structured JSON log stream — visible to admins in Railway log output. No migration or schema change is required for FR25 in v1. The `interaction_logs` table will be populated by Epic 3 agent code.
+
+### Critical Anti-Patterns to AVOID
+
+1. **DO NOT create a new admin prefix router** — reuse `APIRouter(prefix="/api/admin", ...)` in the new file, same as `credentials.py` and `config.py`
+2. **DO NOT import `Session` without the `UserSession` alias** — name collision with SQLAlchemy internals
+3. **DO NOT add `.where()` clauses before `.order_by().limit()`** — SQLAlchemy 2.x: build the base select first, then add optional `.where()` calls
+4. **DO NOT log `tableau_user_id`** anywhere in this module — it is PII. The session lookup returns it in the response only (to the authenticated admin).
+5. **DO NOT add a `commit()`** — read-only endpoints; `get_db` owns the session lifecycle
+6. **DO NOT add a `tool` field to the schema** — the DB column is `tool_calls` (string, stores JSON). Return it as-is; Epic 3 will define the JSON structure when tool execution is built.
+
+### Existing Patterns to Follow
+
+- **Admin auth**: `dependencies=[Depends(require_admin)]` on the route — matches `credentials.py:25` and `integrations.py:31`
+- **SQLAlchemy 2.x query**: `select(Model).where(...).order_by(...).limit(N)` — matches `credentials.py:39`
+- **Response envelope**: `{"data": ..., "meta": {"request_id": str(uuid.uuid4())}}` — matches all existing endpoints
+- **Router registration**: `from app.api.admin.logs import router as admin_logs_router` then `app.include_router(admin_logs_router)` in `main.py`
+
+### Test Seeding Pattern
+
+Tests seed data via the `db_session` fixture (SQLAlchemy `AsyncSession` with savepoint rollback). **Always create a `Session` row before creating an `InteractionLog`** — FK constraint enforced. The session `db_session.flush()` after each add populates the PK before the next insert needs it.
+
+### File List
+
+**Created:**
+- `autom9-backend/app/schemas/logs.py`
+- `autom9-backend/app/api/admin/logs.py`
+- `autom9-backend/tests/api/test_admin_logs.py`
+
+**Modified:**
+- `autom9-backend/app/main.py` — import + register `admin_logs_router`
+
+---
+
+## Dev Agent Record
+
+### Implementation Notes
+
+Implemented all 4 tasks per spec. Zero deviations.
+
+### Deviations
+
+None.
+
+### Completion Notes List
+
+- `app/schemas/logs.py`: `LogEntry`, `LogsResponse`, `SessionLookupData`, `SessionLookupResponse` — all reuse `Meta` from `status.py`.
+- `app/api/admin/logs.py`: `GET /api/admin/logs` with optional `session_id`, `since`, `until`, `limit` (1–500, default 100); `GET /api/admin/sessions/{session_id}` returns `tableau_user_id`. `Session as UserSession` alias used. No commit. Read-only.
+- `app/main.py`: `admin_logs_router` registered after `admin_config_router`.
+- 14 new tests; 127 total pass. All ACs satisfied. No regressions.
+
+### Review Findings
+
+**Patch findings:**
+- [x] [Review][Patch] Timezone-naive `since`/`until` params — fixed: coerce naive datetimes to UTC before comparison [app/api/admin/logs.py]
+- [x] [Review][Patch] Inverted date range not validated — fixed: added 422 guard when `since > until` [app/api/admin/logs.py]
+- [x] [Review][Patch] `_MAX_LOGS` naming misleading — fixed: renamed to `_DEFAULT_LIMIT` [app/api/admin/logs.py:19]
+- [x] [Review][Patch] Query builds `order_by().limit()` before `.where()` — fixed: filters applied first, `order_by().limit()` last [app/api/admin/logs.py]
+
+**Deferred findings:**
+- [x] [Review][Defer] No offset/cursor pagination — `limit` with no `offset` means callers cannot page through results [app/api/admin/logs.py] — deferred, v1 design decision
+- [x] [Review][Defer] 404 detail leaks session_id value — echoes UUID in error body; admin-only endpoint so risk is low [app/api/admin/logs.py:86] — deferred, acceptable for admin endpoint
+- [x] [Review][Defer] `tool_calls: str | None` as opaque string — no JSON schema enforcement; Epic 3 will define structure [app/schemas/logs.py:13] — deferred, pre-existing DB schema
+- [x] [Review][Defer] FR25 not covered by a test — AC is about structured log stream observability, not a DB query; no automated test needed for v1 [tests/api/test_admin_logs.py] — deferred, out of scope
+- [x] [Review][Defer] `tableau_user_id` logging risk via access log middleware — theoretical; no response-body logging middleware configured [app/api/admin/logs.py] — deferred, theoretical
+- [x] [Review][Defer] No max length on `masked_output`/`tool_calls` — unbounded string; pre-existing DB schema concern [app/schemas/logs.py] — deferred, pre-existing
+
+### Change Log
+
+- 2026-04-24: Story 2.5 created — admin interaction log access endpoints
+- 2026-04-24: Story 2.5 implemented — GET /api/admin/logs + GET /api/admin/sessions/{session_id}. 14 new tests, 127 total pass.

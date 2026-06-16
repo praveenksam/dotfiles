@@ -1,0 +1,18 @@
+from app.integrations.base import IntegrationBase, IntegrationStatus
+from app.core.exceptions import IntegrationError
+
+
+class GoogleDocsIntegration(IntegrationBase):
+    @property
+    def name(self) -> str:
+        return "google_docs"
+
+    async def health_check(self) -> IntegrationStatus:
+        return IntegrationStatus(
+            name=self.name,
+            status="unavailable",
+            error="not configured",
+        )
+
+    async def execute(self, action: str, params: dict) -> dict:
+        raise IntegrationError(self.name, "Google Docs not configured")

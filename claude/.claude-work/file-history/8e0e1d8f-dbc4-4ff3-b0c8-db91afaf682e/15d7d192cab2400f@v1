@@ -1,0 +1,180 @@
+import pytest
+from httpx import AsyncClient
+from unittest.mock import AsyncMock
+
+from app.agent.provider import LLMResponse
+
+pytestmark = pytest.mark.asyncio(loop_scope="session")
+
+SESSION_HEADERS = {"X-Autom9-Session": "00000000-0000-0000-0000-000000000001"}
+
+_BASE_CONFIG = {
+    "version": "1.0.0",
+    "workflow_id": "planning",
+    "tools": [],
+    "agent_instructions": "You are a planning assistant.",
+}
+
+
+# ---------------------------------------------------------------------------
+# No active config → 404
+# ---------------------------------------------------------------------------
+
+
+async def test_chat_no_config_returns_404(client: AsyncClient, monkeypatch):
+    import app.api.chat as chat_module
+    from app.config.workflow_registry import WorkflowRegistry
+
+    registry = WorkflowRegistry()
+    monkeypatch.setattr(chat_module, "workflow_registry", registry)
+
+    response = await client.post("/api/chat", json={"message": "hello"}, headers=SESSION_HEADERS)
+    assert response.status_code == 404
+
+
+# ---------------------------------------------------------------------------
+# Provider not configured → 503
+# ---------------------------------------------------------------------------
+
+
+async def test_chat_no_provider_returns_503(client: AsyncClient, monkeypatch):
+    import app.api.chat as chat_module
+    from app.config.workflow_registry import WorkflowRegistry
+    from app.core.exceptions import ProviderError
+
+    registry = WorkflowRegistry()
+    registry._active = _BASE_CONFIG
+    monkeypatch.setattr(chat_module, "workflow_registry", registry)
+
+    async def _fail_provider(db):
+        raise ProviderError("none", "No active LLM provider configured.")
+
+    monkeypatch.setattr(chat_module, "get_provider", _fail_provider)
+
+    response = await client.post("/api/chat", json={"message": "hello"}, headers=SESSION_HEADERS)
+    assert response.status_code == 503
+    body = response.json()
+    assert body["error"]["code"] == "PROVIDER_ERROR"
+
+
+# ---------------------------------------------------------------------------
+# LLM call raises ProviderError → 503
+# ---------------------------------------------------------------------------
+
+
+async def test_chat_llm_error_returns_503(client: AsyncClient, monkeypatch):
+    import app.api.chat as chat_module
+    from app.config.workflow_registry import WorkflowRegistry
+    from app.core.exceptions import ProviderError
+
+    registry = WorkflowRegistry()
+    registry._active = _BASE_CONFIG
+    monkeypatch.setattr(chat_module, "workflow_registry", registry)
+
+    mock_provider = AsyncMock()
+    mock_provider.complete.side_effect = ProviderError("openai", "Rate limit exceeded")
+    monkeypatch.setattr(chat_module, "get_provider", AsyncMock(return_value=mock_provider))
+
+    response = await client.post("/api/chat", json={"message": "hello"}, headers=SESSION_HEADERS)
+    assert response.status_code == 503
+
+
+# ---------------------------------------------------------------------------
+# Happy path — returns reply
+# ---------------------------------------------------------------------------
+
+
+async def test_chat_returns_reply(client: AsyncClient, monkeypatch):
+    import app.api.chat as chat_module
+    from app.config.workflow_registry import WorkflowRegistry
+
+    registry = WorkflowRegistry()
+    registry._active = _BASE_CONFIG
+    monkeypatch.setattr(chat_module, "workflow_registry", registry)
+
+    mock_provider = AsyncMock()
+    mock_provider.complete.return_value = LLMResponse(
+        content="I can help with that.",
+        tool_calls=[],
+        finish_reason="stop",
+    )
+    monkeypatch.setattr(chat_module, "get_provider", AsyncMock(return_value=mock_provider))
+
+    response = await client.post(
+        "/api/chat",
+        json={"message": "What are my open days?"},
+        headers=SESSION_HEADERS,
+    )
+    assert response.status_code == 200
+    body = response.json()
+    assert body["data"]["reply"] == "I can help with that."
+    assert "request_id" in body["meta"]
+
+
+# ---------------------------------------------------------------------------
+# Multi-turn — history included in LLM call
+# ---------------------------------------------------------------------------
+
+
+async def test_chat_history_included_in_llm_call(client: AsyncClient, monkeypatch):
+    import app.api.chat as chat_module
+    from app.config.workflow_registry import WorkflowRegistry
+
+    registry = WorkflowRegistry()
+    registry._active = _BASE_CONFIG
+    monkeypatch.setattr(chat_module, "workflow_registry", registry)
+
+    captured: dict = {}
+
+    async def _capture_complete(messages, tools):
+        captured["messages"] = messages
+        return LLMResponse(content="Got it.", tool_calls=[], finish_reason="stop")
+
+    mock_provider = AsyncMock()
+    mock_provider.complete.side_effect = _capture_complete
+    monkeypatch.setattr(chat_module, "get_provider", AsyncMock(return_value=mock_provider))
+
+    response = await client.post(
+        "/api/chat",
+        json={
+            "message": "Follow-up question",
+            "history": [
+                {"role": "user", "content": "First message"},
+                {"role": "assistant", "content": "First reply"},
+            ],
+        },
+        headers=SESSION_HEADERS,
+    )
+    assert response.status_code == 200
+
+    msgs = captured["messages"]
+    # system + 2 history turns + new user turn = 4
+    assert len(msgs) == 4
+    assert msgs[0]["role"] == "system"
+    assert msgs[1]["content"] == "First message"
+    assert msgs[2]["content"] == "First reply"
+    assert msgs[3]["content"] == "Follow-up question"
+
+
+# ---------------------------------------------------------------------------
+# No session header — chat still works, logging skipped
+# ---------------------------------------------------------------------------
+
+
+async def test_chat_no_session_header_still_succeeds(client: AsyncClient, monkeypatch):
+    import app.api.chat as chat_module
+    from app.config.workflow_registry import WorkflowRegistry
+
+    registry = WorkflowRegistry()
+    registry._active = _BASE_CONFIG
+    monkeypatch.setattr(chat_module, "workflow_registry", registry)
+
+    mock_provider = AsyncMock()
+    mock_provider.complete.return_value = LLMResponse(
+        content="Hello!", tool_calls=[], finish_reason="stop"
+    )
+    monkeypatch.setattr(chat_module, "get_provider", AsyncMock(return_value=mock_provider))
+
+    response = await client.post("/api/chat", json={"message": "Hi"})
+    assert response.status_code == 200
+    assert response.json()["data"]["reply"] == "Hello!"

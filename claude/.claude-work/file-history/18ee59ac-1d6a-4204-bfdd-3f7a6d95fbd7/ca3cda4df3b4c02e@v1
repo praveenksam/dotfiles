@@ -1,0 +1,170 @@
+# Deferred Work
+
+## Deferred from: code review of 4-2-capacity-availability-check (2026-04-30)
+
+- `available_days` sent in every POST /api/chat body regardless of whether the LLM is expected to call `check_capacity` — low risk for POC but worth revisiting if capacity data sensitivity increases
+- `docs/example-workflow-config.json` ships with a placeholder Google Docs URL in `open_work_board.google_docs_url` — fine for reference docs but could cause confusion if used as a test fixture
+- `ChatPanel.svelte` sends `available_days` when `worksheetState` is `error` or still `loading` — backend handles `null` gracefully via AC3; a frontend guard (warn or block) would be a UX improvement
+- Non-finite float (Infinity, NaN) for `available_days` not rejected by `ChatRequest` schema — Pydantic `float` allows these; add `field_validator` before hardening for production
+
+## Deferred from: code review of 4-1-open-work-board-ingestion-display (2026-04-30)
+
+- No 401 invalidation/retry on Docs API responses — revoked-mid-cache leaves access token cached and failing until natural expiry; mirrors Calendar (google_docs.py:140-155)
+- `_DOC_ID_RE` doesn't anchor host to `docs.google.com` — admin-only config input today; theoretical SSRF if URL ever becomes user-controlled (google_docs.py:24)
+- AC3 frontend isolation untested — no Vitest/Playwright framework in repo yet; isolation is structural via component boundaries (App.svelte / OpenWorkPanel.svelte)
+- `health_check` discards OAuth `error_description` from token endpoint body — observability gap; only HTTP status surfaced (google_docs.py:117-120)
+- Schema `OpenWorkBoardConfig.google_docs_url` required but API has 404 dead-path — mirrors existing `data_panel.google_docs_url` pattern, tests bypass schema validation (workflow_schema.py + app/api/data.py:91-94)
+- Per-call `httpx.AsyncClient` (no connection pooling) — mirrors Calendar app-wide pattern; refactor would touch every integration (google_docs.py)
+- No total-flow timeout (only per-HTTP timeout=10) — under contention or token refresh + fetch, total time can exceed 20s; mirrors Calendar (google_docs.py)
+- `health_check` catches bare `Exception` — swallows programming errors; mirrors Calendar (google_docs.py:169-170)
+- Frontend has no retry/refresh control / no auto-refresh on focus — mirrors `DataPanel.svelte` (OpenWorkPanel.svelte)
+- `{#each opportunities as opp}` lacks key — mirrors `DataPanel.svelte` (OpenWorkPanel.svelte:57)
+- Long titles overflow / accessibility on opportunity list — no `min-width: 0` / `text-overflow`; mirrors `DataPanel.svelte` (OpenWorkPanel.svelte)
+- Tests reach `WorkflowRegistry._active` private attribute, bypassing schema validation — pre-existing test pattern (tests/api/test_open_work.py)
+- Singleton `_google_docs` shares mutable token state across requests/tests — mirrors Calendar; tests `monkeypatch.setattr` swap the singleton (app/api/data.py:16)
+- `result.get("opportunities", [])` swallows malformed integration response (returns 200 with empty list instead of 5xx) — low priority observability (app/api/data.py:113)
+- No TTL cache on parsed open-work — every panel render re-fetches the doc; perf optimization (google_docs.py)
+- No TS↔Pydantic contract test — manual sync between `OpportunityItem` schema and TS interface; project-wide concern
+- `data_panel` and `open_work_board` can point to the same doc with no warning — UX nicety (workflow_schema.py)
+- No request_id propagation from frontend → backend — cross-system tracing impossible; project-wide concern
+
+## Deferred from: code review of 3-6-google-calendar-integration (2026-04-29)
+
+- Credentials exposed via httpx debug logging (`HTTPX_LOG_LEVEL=debug`) — operational concern; same risk as every OAuth client; ensure debug logging disabled in production (google_calendar.py:51-59)
+- AC5 integration-level log missing `session_id`, `latency_ms`, `masked_input` — AC5 compliance is in the centralized `chat.py` log, not integration-level; revisit if audit trail requirements tighten (google_calendar.py:170-176)
+- `event_id` in integration log is a Google-generated opaque ID — not directly identifiable PII; acceptable for supplemental log; revisit if log aggregation policies require strict PII scrubbing (google_calendar.py:174)
+- No action registry/enum — v1 scopes to `create_invite` only per spec; refactor to dispatch table when second action is added (google_calendar.py:117)
+
+## Deferred from: code review of 3-5-smartsheet-planning-request-integration (2026-04-29)
+
+- Token map from session_context only — contract: Tableau extension must include all PII fields in session_context on every confirm call; orphaned tokens not handled server-side (chat.py:_handle_confirm, AC5/FR18)
+- `db.flush()` without explicit commit in `_write_log` — correctness depends on `get_db` session lifecycle; likely committed at request teardown; pre-existing pattern (chat.py:_write_log)
+- `ProviderError` re-raised without `HTTPException` wrapping — likely caught by global exception handler in `main.py`; not introduced by this story (chat.py)
+- `_INTEGRATION_REGISTRY` built at module import time — pre-existing `ALL_INTEGRATIONS` singleton pattern from story 1.3; dynamic reloading not a v1 requirement (chat.py:29)
+- `confirm.action` client-supplied and unvalidated — `SmartsheetIntegration.execute()` validates the action at the integration level; defense-in-depth concern only (chat.py:_handle_confirm)
+- History masking uses current request's token map — stale tokens in prior turns won't rehydrate; pre-existing design decision noted in story 3.3 deferred work (chat.py:_handle_message)
+- `_write_log` silently swallows all exceptions — acceptable trade-off; pre-existing pattern; no caller visibility when DB is degraded (chat.py:_write_log)
+- Token pattern collision — session_context value resembling a token string (e.g. "CONSULTANT_001") could corrupt cross-individual rehydration; pre-existing masking system design (app/agent/masking.py)
+- `rehydrate_text` not word-boundary aware — substring replacement could mutate coincidental token-format substrings in param values; contrived in practice (app/agent/masking.py)
+- `mask_fields` may mutate caller's dict in-place — `body.session_context` dict could be modified during request; pre-existing masking behavior (app/agent/masking.py)
+- `logger.warning` with `extra={}` — fields may be silently dropped if JSON formatter not configured to emit extra; pre-existing logging pattern (smartsheet.py)
+- `IntegrationError` global handler not visible in story 3.5 diff — existing test suite passes (189 tests), handler presumed in `main.py`; confirm during next `main.py` review (app/main.py)
+
+## Deferred from: code review of 3-4-agent-orchestration-action-confirmation (2026-04-29)
+
+- Large tool result may exceed LLM token limit — no truncation of tool_result before embedding in LLM message; integrations are stubs in v1, revisit when real payloads arrive (app/api/chat.py:212)
+- Integration registry module-level static — `_INTEGRATION_REGISTRY` built once at startup; pre-existing ALL_INTEGRATIONS singleton pattern; dynamic reloading not a v1 requirement (app/api/chat.py:29)
+- pending_action display_text truncated to first 3 params — documented in spec dev notes as v1 design; full params available in ToolCallProposal.params (app/api/chat.py:193-195)
+- buildSessionContext reads only first worksheet row — documented in spec dev notes; multi-row context not a v1 requirement (ChatPanel.svelte:22-28)
+- AC7 p95 ≤20s performance unverifiable — nice-to-have target, latency_ms instrumentation exists; no benchmark harness in scope (app/api/chat.py)
+- Error state UI lock after confirm failure with no retry — pendingAction cleared before API completes; UX gap acceptable for v1 (ChatPanel.svelte:82,106)
+- confirm.params untrusted input — no server-side schema validation that params match LLM-proposed values; POC design decision, acceptable for v1 (app/api/chat.py:189)
+
+## Deferred from: code review of 3-3-agent-chat-interface (2026-04-29)
+
+- History turns bypass masking pipeline — `mask_text` only applied to `body.message`, not `body.history`; scoped to Story 3.4 per design (app/api/chat.py:67-69)
+- Token map per-request; cross-turn masking broken by design — LLM echos of prior unmasked tokens won't rehydrate; Story 3.4 responsibility (app/api/chat.py)
+- ProviderError missing from OpenAPI 503 response schema — docs gap only, not a functional bug (app/main.py)
+- `json.dumps(tool_calls)` may fail on non-serializable objects from provider — depends on provider contract; guard when provider implementations mature (app/api/chat.py:88)
+- chatState stuck loading if success-path assignment throws — extremely unlikely, pre-existing pattern (autom9-extension/src/components/ChatPanel.svelte)
+- `x_autom9_session` header value logged verbatim (log injection risk, low severity) (app/api/chat.py:105)
+- `request_id` not correlated to session/log row — design choice; add if production debugging becomes painful (app/api/chat.py:95)
+
+## Deferred from: code review of 3-2-token-masking-rehydration-pipeline (2026-04-29)
+
+- Masking module (`mask_fields`, `mask_text`, `rehydrate_text`) not wired into agent execution pipeline — story 3.3 will integrate at LLM call boundaries (app/agent/)
+- AC4 log masking unverifiable — `masked_input`/`masked_output` fields exist in `InteractionLog` but no code populates them; blocked on agent wiring in story 3.3 (app/models/)
+- `mask_fields()` propagates `MaskingError` on empty field values — by design; callers must validate inputs upstream before calling (app/agent/masking.py)
+- Stale/unknown tokens left silently unreplaced in `rehydrate()` — session-scoped token maps make this safe for v1; revisit if cross-session replay needed (app/agent/masking.py)
+- TypeScript `tokenMap` field not yet populated — placeholder for story 3.3 agent chat integration (autom9-extension/src/stores/session.svelte.ts)
+- Unicode PII normalization (NFC vs NFD) not applied — distinct normalization forms registered as separate tokens; normalize at ingestion boundary when international PII expected (app/agent/masking.py)
+- Category inference substring false positives — field name "consultation_notes" infers "consultant"; token prefix label only, masking/rehydration still correct (app/agent/masking.py:_infer_category)
+- Rehydrate tokens-as-real-values edge case — if a real value coincidentally contains a token string, insertion-order rehydration may not resolve nested references; contrived in PII context (app/agent/masking.py:rehydrate)
+
+## Deferred from: code review of 3-1-planning-data-display-panel (2026-04-24)
+
+- No format constraints on `worksheet_name` field — v1 acceptable; Tableau API rejects invalid names at runtime without client feedback (autom9-backend/app/config/workflow_schema.py)
+- No URL format validation for `google_docs_url` — no URL parser applied; malformed or untrusted URLs pass through to integration (autom9-backend/app/config/workflow_schema.py)
+- No timeout on `getSummaryDataAsync()` Tableau API call — browser hangs indefinitely if Tableau API stalls; AbortController pattern not established for Tableau API in v1 (autom9-extension/src/lib/tableau.ts)
+- Session header silently omitted when `sessionStore.sessionId` not yet set on first mount — task fetches logged as "unknown" session; audit trail gap (autom9-extension/src/components/DataPanel.svelte)
+
+## Deferred from: code review of 2-5-admin-interaction-log-access (2026-04-24)
+
+- No offset/cursor pagination on `GET /api/admin/logs` — `limit` with no `offset`; callers cannot page beyond first N results (app/api/admin/logs.py)
+- 404 detail for unknown session echoes session_id — admin-only endpoint, low risk; sanitize before production (app/api/admin/logs.py:86)
+- `tool_calls: str | None` is opaque string — no JSON schema; Epic 3 will define structure when tool execution is built (app/schemas/logs.py:13)
+- FR25 not covered by automated test — AC is about structured log stream observability, not DB query; revisit when log aggregation is wired
+- `tableau_user_id` logging risk via response-body access logs — theoretical; no middleware configured; add `response_model_exclude` if logging middleware added (app/api/admin/logs.py)
+- No max length on `masked_output`/`tool_calls` — unbounded string fields; add DB column length constraint before production scale (app/schemas/logs.py)
+
+## Deferred from: code review of 2-4-integration-connection-testing (2026-04-24)
+
+- Log "unknown" session_id when `X-Autom9-Session` header absent — no traceability for headerless admin requests; acceptable v1 placeholder (app/api/integrations.py:46)
+- `_INTEGRATION_MAP` built at module import time — stale if integrations added dynamically; pre-existing `ALL_INTEGRATIONS` singleton pattern (app/api/integrations.py:20)
+- Race condition between DB query and provider instantiation in `get_provider` — credential could be deleted/rotated between query and decrypt call; out of story scope (app/agent/provider_factory.py)
+- `asyncio.wait_for` requires `provider.complete()` to be a coroutine — theoretical `TypeError` if a sync provider is wired; not current (app/api/integrations.py:96)
+- No timeout test coverage for non-LLM integrations — `error="connection test timed out"` path is untested; nice to have (tests/api/test_integrations.py)
+
+## Deferred from: code review of 2-1-admin-config-panel-byom-credential-setup (2026-04-22)
+
+- Admin panel accessible to any Tableau user via `?admin` URL param — v1 single-tenant design; backend token is the real auth gate (App.svelte:10)
+- Missing `X-Autom9-Token` in frontend POST — always 401 in real deployment; story spec explicitly defers this to v1 dev-time concern (AdminConfig.svelte)
+- No rate limiting on admin token brute-force — infrastructure concern, not code (app/api/deps.py)
+- CORS `allow_methods=["*"]` / `allow_headers=["*"]` overly permissive — pre-existing from story 1.1 (app/main.py:38-40)
+- `IntegrationError` handler leaks details via `str(exc)` — pre-existing from story 1.3 (app/main.py:51)
+- `db_session` savepoint restart listener fragility with asyncpg — pre-existing from story 1.1 (tests/conftest.py:45)
+- `pytestmark loop_scope="session"` + function-scoped fixtures — pre-existing from story 1.3 (tests/api/)
+- `ENCRYPTION_KEY` env var pre-set in CI silently overrides test-generated key — low risk, document in CI setup (tests/conftest.py:7)
+- No `created_at`/`updated_at` on `credential_store` — audit trail gap; revisit when key rotation tracking is required (app/models/credential_store.py)
+- No test for `decrypt()` path or `InvalidToken` on key mismatch — no consumer yet; add when Epic 3 credential use is implemented (app/services/encryption.py:16)
+- `apiFetch` injects `Content-Type: application/json` on GET requests — pre-existing api.ts behavior (autom9-extension/src/lib/api.ts:30-33)
+- API key transmitted cleartext frontend→backend — TLS/HTTPS enforcement is infrastructure; add HSTS before production deploy
+
+## Deferred from: code review of 1-3-integration-health-check-on-extension-load (2026-04-22)
+
+- Session `db.flush()` + commit post-response — on DB commit failure client receives 201 with phantom session_id; known FastAPI/SQLAlchemy trade-off, acceptable for current scale (sessions.py:22)
+- CORS `allow_credentials=True` + wildcard methods/headers over-grant — carried over from 1.2, scope before auth/credentials added (main.py:32)
+- `POST /api/sessions` unauthenticated — any caller can create sessions for arbitrary tableau_user_id; auth is Epic 2
+- `X-Autom9-Session` header untrusted — no validation against real sessions in DB; Epic 2
+- `ALL_INTEGRATIONS` module-level singletons — future stateful integrations will share mutable state across concurrent requests; revisit when Epic 2 real integrations are added (__init__.py:7)
+- `BACKEND_URL` defaults to `http://` plaintext — add HTTPS enforcement before production deploy (api.ts:3)
+- `tableau_user_id` has no length/format validation — empty string accepted silently; add min_length=1 constraint before any user-facing auth (schemas/sessions.py:7)
+
+## Deferred from: code review of 1-2-tableau-extension-shell-initialization (2026-04-15)
+
+- initializeExtension() silent no-op cannot distinguish dev-absence from production CDN load failure — AC2 gap; address in Story 1.3 when initialization is more complete (tableau.ts:19)
+- Hardcoded postgres credentials in docker-compose.yml — pre-existing dev practice from Story 1.1; use env var indirection before any shared/staging deployment
+- ENCRYPTION_KEY/BACKEND_SECRET accept any string with no min-length validation — pre-existing Story 1.1; add pydantic validator before any cryptographic use
+- CORS allow_credentials=True with allow_methods=["*"]/allow_headers=["*"] over-grant — not needed at current stage but scope before auth/credentials are added (main.py:20-22)
+- No timeout on `initializeAsync()` — permanent loading state on hung promise; add timeout in Story 1.3+ when initialization is fully wired
+- No timeout on `apiFetch()` calls — requests hang indefinitely; add AbortController + signal in Story 1.3 when apiFetch is first called
+- DB port 5432 exposed to host in docker-compose.yml — pre-existing; scope to 127.0.0.1 before staging
+- LOG_LEVEL accepts arbitrary strings — pre-existing; add Literal constraint before logging wired
+- VITE_BACKEND_URL/BACKEND_URL defaults to HTTP — by design per spec for dev; add HTTPS enforcement before production deploy
+- .trex source-location hardcoded to localhost — intentional per spec; add environment-specific build step before production distribution
+- test_cors.py module-level import of app.main fragile when run in isolation — known Story 1.1 caveat per spec
+- window.tableau.extensions not null-checked before access — minor; type guard sufficient for expected runtime
+- ENCRYPTION_KEY/BACKEND_SECRET unguarded in docker-compose (empty string passthrough when host env vars absent) — pre-existing; enforce required env vars in CI
+
+## Deferred from: code review of 1-1-project-scaffolding-backend-foundation (2026-04-14) — fresh review
+
+- `get_db` commits on every yield including read-only requests; unnecessary COMMIT round-trip — acceptable for scaffold, optimize when throughput matters
+- `LOG_LEVEL` accepts any string including invalid values; silently ignored by logging framework — add `Literal["DEBUG","INFO","WARNING","ERROR","CRITICAL"]` constraint before logging is wired
+- Health tests create raw `AsyncClient` bypassing `override_get_db` — benign until health endpoints touch DB
+- `asyncio.run()` in `alembic/env.py` fails if outer event loop active — non-issue for CLI invocation, revisit if programmatic migration calls are added
+
+## Deferred from: code review of 1-1-project-scaffolding-backend-foundation (2026-04-14)
+
+- SAVEPOINT test fixture may need `after_transaction_end` listener for multi-commit test patterns in future stories — adequate for current tests, revisit when db_session is actually used
+- Hardcoded dev DB password `autom9/autom9` in docker-compose.yml + port 5432 exposed on host — acceptable for local dev
+- `ENCRYPTION_KEY` / `BACKEND_SECRET` accept any string with no length or entropy validation — add validation before any key-derivation or signing code ships
+- `python-jose` has known CVEs and is unmaintained; replace with `joserfc` before any JWT signing code ships
+- `uvicorn` runs as root (no `USER` in Dockerfile) with no `--workers` flag — production hardening
+- `class Session(Base)` name collides with `sqlalchemy.orm.Session`; rename to `UserSession` or `AppSession` if collision occurs in future imports
+- Alembic `upgrade head` in entrypoint has no advisory lock; multiple replicas starting concurrently may race — add pg_advisory_lock before horizontal scale
+- Module-level engine + settings creation in `engine.py` — consider lazy initialization if test coupling becomes a problem
+- No `connect_args` timeout on engine; DB unreachable = indefinite hang — add `connect_timeout` for production resilience
+- `CredentialStore` has no index on `provider` alone — add if queries filter by provider across orgs
+- `InteractionLog.session_id` FK lacks `ondelete` clause — decide CASCADE vs RESTRICT when session lifecycle is defined (story 3.x)
+- Lifespan context manager is empty — wire engine startup/shutdown in a future story
+- No `healthcheck` for `app` service in docker-compose — add for production readiness

@@ -1,0 +1,338 @@
+import json
+import logging
+import time
+import uuid
+
+from fastapi import APIRouter, Depends, Header, HTTPException
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from app.agent.masking import TokenMap, mask_fields, mask_text, rehydrate_text
+from app.agent.provider_factory import get_provider
+from app.config.workflow_registry import workflow_registry
+from app.core.exceptions import IntegrationError, ProviderError
+from app.db.deps import get_db
+from app.integrations import ALL_INTEGRATIONS
+from app.models.interaction_log import InteractionLog
+from app.schemas.chat import (
+    ChatData,
+    ChatRequest,
+    ChatResponse,
+    ConfirmPayload,
+    ToolCallProposal,
+)
+from app.schemas.status import Meta
+
+router = APIRouter(prefix="/api/chat", tags=["chat"])
+logger = logging.getLogger(__name__)
+
+# Registry: integration name → IntegrationBase instance. Zero if/else in orchestration.
+_INTEGRATION_REGISTRY = {integration.name: integration for integration in ALL_INTEGRATIONS}
+
+
+@router.post("", response_model=ChatResponse, status_code=200)
+async def chat(
+    body: ChatRequest,
+    x_autom9_session: str | None = Header(default=None),
+    db: AsyncSession = Depends(get_db),
+) -> ChatResponse:
+    """
+    Primary agent interaction endpoint.
+
+    Two modes:
+    - Normal turn (body.message set): mask input, call LLM, return reply or pending_action.
+    - Confirm turn (body.confirm_action set): execute tool via registry, call LLM for final reply.
+
+    Masking pipeline (FR17, FR18): session_context fields registered before mask_text.
+    Logs masked_input/masked_output only (NFR7).
+    """
+    if body.message is None and body.confirm_action is None:
+        raise HTTPException(
+            status_code=422,
+            detail="Either 'message' or 'confirm_action' must be provided",
+        )
+
+    active = workflow_registry.active_config
+    if active is None:
+        raise HTTPException(status_code=404, detail="No workflow config loaded")
+
+    try:
+        provider = await get_provider(db)
+    except ProviderError as exc:
+        logger.warning("chat_provider_unavailable", extra={"error": str(exc)})
+        raise
+
+    if body.confirm_action is not None:
+        return await _handle_confirm(
+            confirm=body.confirm_action,
+            history=body.history,
+            session_context=body.session_context,
+            provider=provider,
+            session_id_str=x_autom9_session,
+            db=db,
+            active_config=active,
+        )
+
+    return await _handle_message(
+        message=body.message or "",
+        history=body.history,
+        session_context=body.session_context,
+        provider=provider,
+        session_id_str=x_autom9_session,
+        db=db,
+        active_config=active,
+    )
+
+
+async def _handle_message(
+    *,
+    message: str,
+    history: list,
+    session_context: dict[str, str],
+    provider,
+    session_id_str: str | None,
+    db: AsyncSession,
+    active_config: dict,
+) -> ChatResponse:
+    """Normal chat turn: mask → LLM → reply or pending_action."""
+    tools = workflow_registry.get_tool_definitions()
+
+    # Masking pipeline — register identifiable fields BEFORE mask_text (FR17, ARC-9).
+    token_map = TokenMap()
+    if session_context:
+        mask_fields(session_context, token_map)
+
+    masked_message = mask_text(message, token_map)
+
+    # Build messages: system → masked history → new masked user turn.
+    # History masking resolves the Story 3.3 deferred item.
+    agent_instructions = active_config.get("agent_instructions", "")
+    messages: list[dict] = []
+    if agent_instructions:
+        messages.append({"role": "system", "content": agent_instructions})
+    for turn in history:
+        messages.append({"role": turn.role, "content": mask_text(turn.content, token_map)})
+    messages.append({"role": "user", "content": masked_message})
+
+    start_ms = int(time.monotonic() * 1000)
+    try:
+        llm_response = await provider.complete(messages, tools)
+    except ProviderError as exc:
+        logger.warning("chat_llm_error", extra={"error": str(exc)})
+        raise
+    latency_ms = int(time.monotonic() * 1000) - start_ms
+
+    masked_output = llm_response.content or ""
+    tool_calls_json = json.dumps(llm_response.tool_calls) if llm_response.tool_calls else None
+
+    await _write_log(
+        db=db,
+        session_id_str=session_id_str,
+        masked_input=masked_message,
+        masked_output=masked_output,
+        tool_calls=tool_calls_json,
+        latency_ms=latency_ms,
+    )
+
+    # Tool call path: return pending_action for consultant confirmation (FR6).
+    if llm_response.finish_reason == "tool_calls" and llm_response.tool_calls:
+        tool_call = llm_response.tool_calls[0]  # first tool call only in v1
+        if _find_tool_definition(tool_call.get("name", "")) is None:
+            logger.warning("chat_unknown_tool_name", extra={"tool": tool_call.get("name", "")})
+            reply = rehydrate_text(masked_output, token_map) if masked_output else "I encountered an unexpected error. Please try again."
+            return ChatResponse(
+                data=ChatData(reply=reply),
+                meta=Meta(request_id=str(uuid.uuid4())),
+            )
+        pending = _build_pending_action(tool_call)
+        # Rehydrate LLM explanatory text that accompanied the tool call.
+        reply = rehydrate_text(masked_output, token_map) if masked_output else None
+        return ChatResponse(
+            data=ChatData(reply=reply, pending_action=pending),
+            meta=Meta(request_id=str(uuid.uuid4())),
+        )
+
+    # Normal text response path.
+    reply = rehydrate_text(masked_output, token_map) if masked_output else None
+    return ChatResponse(
+        data=ChatData(reply=reply),
+        meta=Meta(request_id=str(uuid.uuid4())),
+    )
+
+
+async def _handle_confirm(
+    *,
+    confirm: ConfirmPayload,
+    history: list,
+    session_context: dict[str, str],
+    provider,
+    session_id_str: str | None,
+    db: AsyncSession,
+    active_config: dict,
+) -> ChatResponse:
+    """
+    Confirmed tool execution path (FR6, FR16).
+
+    1. Resolve integration from registry by tool name.
+    2. Execute via IntegrationBase.execute() — raises IntegrationError on failure (FR16).
+    3. Feed tool result back to LLM for natural-language confirmation reply.
+    4. Return rehydrated final reply.
+    """
+    # Rebuild token_map from session_context for masking params and rehydrating reply.
+    token_map = TokenMap()
+    if session_context:
+        mask_fields(session_context, token_map)
+
+    # Resolve integration — registry-driven, no if/else.
+    integration_name, resolved_action = _resolve_integration(confirm.tool_name)
+    integration = _INTEGRATION_REGISTRY.get(integration_name)
+    if integration is None:
+        raise HTTPException(
+            status_code=503,
+            detail=f"No integration registered for tool '{confirm.tool_name}'",
+        )
+
+    # Execute tool — IntegrationError propagates to global handler → 503 (FR16).
+    start_ms = int(time.monotonic() * 1000)
+    tool_result = await integration.execute(resolved_action or confirm.action, confirm.params)
+    latency_ms = int(time.monotonic() * 1000) - start_ms
+
+    logger.info(
+        "tool_call_complete",
+        extra={
+            "session_id": session_id_str or "unknown",
+            "tool": confirm.tool_name,
+            "latency_ms": latency_ms,
+            "masked_input": mask_text(json.dumps(confirm.params), token_map),
+        },
+    )
+
+    # Feed tool result back to LLM for a natural-language confirmation message.
+    tools = workflow_registry.get_tool_definitions()
+    agent_instructions = active_config.get("agent_instructions", "")
+    messages: list[dict] = []
+    if agent_instructions:
+        messages.append({"role": "system", "content": agent_instructions})
+    for turn in history:
+        messages.append({"role": turn.role, "content": mask_text(turn.content, token_map)})
+    tool_result_json = json.dumps(tool_result, default=str)
+    masked_tool_result = mask_text(tool_result_json, token_map)
+    messages.append({
+        "role": "user",
+        "content": f"[Tool result for {confirm.tool_name}]: {masked_tool_result}",
+    })
+
+    llm_start_ms = int(time.monotonic() * 1000)
+    try:
+        llm_response = await provider.complete(messages, tools)
+    except ProviderError as exc:
+        logger.warning("chat_llm_post_tool_error", extra={"error": str(exc)})
+        raise
+    llm_latency_ms = int(time.monotonic() * 1000) - llm_start_ms
+
+    masked_output = llm_response.content or ""
+
+    await _write_log(
+        db=db,
+        session_id_str=session_id_str,
+        masked_input=mask_text(json.dumps(confirm.params, default=str), token_map),
+        masked_output=masked_output,
+        tool_calls=None,
+        latency_ms=llm_latency_ms,
+    )
+
+    reply = rehydrate_text(masked_output, token_map)
+
+    return ChatResponse(
+        data=ChatData(reply=reply),
+        meta=Meta(request_id=str(uuid.uuid4())),
+    )
+
+
+def _build_pending_action(tool_call: dict) -> ToolCallProposal:
+    """
+    Build a ToolCallProposal from a normalized LLM tool call.
+
+    Normalized format (from both providers):
+        {"id": "...", "name": "tool_name", "arguments": {...}}
+    """
+    tool_name = tool_call.get("name", "")
+    params = tool_call.get("arguments", {})
+
+    tool_def = _find_tool_definition(tool_name)
+    description = tool_def.get("description", tool_name) if tool_def else tool_name
+
+    _, resolved_action = _resolve_integration(tool_name)
+    resolved_action = resolved_action or tool_name
+
+    display_text = description
+    if params:
+        param_summary = ", ".join(f"{k}={v!r}" for k, v in list(params.items())[:3])
+        display_text = f"{description} ({param_summary})"
+
+    return ToolCallProposal(
+        tool_name=tool_name,
+        action=resolved_action,
+        params=params,
+        display_text=display_text,
+    )
+
+
+def _find_tool_definition(tool_name: str) -> dict | None:
+    """Look up a tool definition dict from the active workflow config by name."""
+    active = workflow_registry.active_config
+    if active is None:
+        return None
+    for tool in active.get("tools", []):
+        if tool.get("name") == tool_name:
+            return tool
+    return None
+
+
+def _resolve_integration(tool_name: str) -> tuple[str, str | None]:
+    """
+    Return (integration_name, action) for a tool name.
+
+    Reads integration and action from workflow config's ToolDefinition.
+    Falls back to tool_name for both if not specified.
+    """
+    tool_def = _find_tool_definition(tool_name)
+    if tool_def is None:
+        return tool_name, None
+    integration_name = tool_def.get("integration") or tool_name
+    action = tool_def.get("action")
+    return integration_name, action
+
+
+async def _write_log(
+    *,
+    db: AsyncSession,
+    session_id_str: str | None,
+    masked_input: str,
+    masked_output: str,
+    tool_calls: str | None,
+    latency_ms: int,
+) -> None:
+    """Write InteractionLog entry. Silently skips on any error (invalid session, FK miss)."""
+    if not session_id_str:
+        return
+    try:
+        session_id = uuid.UUID(session_id_str)
+    except ValueError:
+        logger.warning("chat_invalid_session_header", extra={"header": session_id_str})
+        return
+    try:
+        log_entry = InteractionLog(
+            session_id=session_id,
+            masked_input=masked_input,
+            masked_output=masked_output,
+            tool_calls=tool_calls,
+            latency_ms=latency_ms,
+        )
+        db.add(log_entry)
+        await db.flush()
+        logger.info(
+            "chat_turn_logged",
+            extra={"session_id": str(session_id), "latency_ms": latency_ms},
+        )
+    except Exception as exc:
+        logger.warning("chat_log_write_failed", extra={"error": str(exc)})

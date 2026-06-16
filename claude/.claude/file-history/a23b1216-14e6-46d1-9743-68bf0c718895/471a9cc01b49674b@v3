@@ -1,0 +1,107 @@
+import uuid
+from datetime import datetime, timezone
+from typing import Annotated
+from uuid import UUID
+
+from fastapi import APIRouter, Depends, HTTPException, Query
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from app.api.deps import require_admin
+from app.db.deps import get_db
+from app.models.interaction_log import InteractionLog
+from app.models.session import Session as UserSession
+from app.schemas.logs import LogEntry, LogsResponse, SessionLookupData, SessionLookupResponse
+from app.schemas.status import Meta
+
+router = APIRouter(prefix="/api/admin", tags=["admin"])
+
+_DEFAULT_LIMIT = 100  # default page size; overridable via ?limit= (max 500)
+
+
+@router.get(
+    "/logs",
+    response_model=LogsResponse,
+    dependencies=[Depends(require_admin)],
+)
+async def get_logs(
+    session_id: Annotated[UUID | None, Query()] = None,
+    since: Annotated[datetime | None, Query()] = None,
+    until: Annotated[datetime | None, Query()] = None,
+    limit: Annotated[int, Query(ge=1, le=500)] = _DEFAULT_LIMIT,
+    db: AsyncSession = Depends(get_db),
+) -> LogsResponse:
+    """
+    Admin-only masked interaction log retrieval.
+    Returns entries from interaction_logs table ordered newest-first.
+    No PII, no credentials in any entry (FR24, NFR7).
+    Optional query params: session_id (UUID), since/until (ISO datetime), limit (int 1–500).
+    """
+    # Coerce naive datetimes to UTC — timestamp column is timezone-aware
+    if since is not None and since.tzinfo is None:
+        since = since.replace(tzinfo=timezone.utc)
+    if until is not None and until.tzinfo is None:
+        until = until.replace(tzinfo=timezone.utc)
+
+    if since is not None and until is not None and since > until:
+        raise HTTPException(status_code=422, detail="'since' must be before 'until'")
+
+    stmt = select(InteractionLog)
+    if session_id is not None:
+        stmt = stmt.where(InteractionLog.session_id == session_id)
+    if since is not None:
+        stmt = stmt.where(InteractionLog.timestamp >= since)
+    if until is not None:
+        stmt = stmt.where(InteractionLog.timestamp <= until)
+    stmt = stmt.order_by(InteractionLog.timestamp.desc()).limit(limit)
+
+    result = await db.execute(stmt)
+    rows = result.scalars().all()
+
+    entries = [
+        LogEntry(
+            id=row.id,
+            session_id=row.session_id,
+            masked_input=row.masked_input,
+            masked_output=row.masked_output,
+            tool_calls=row.tool_calls,
+            latency_ms=row.latency_ms,
+            timestamp=row.timestamp,
+        )
+        for row in rows
+    ]
+
+    return LogsResponse(
+        data=entries,
+        meta=Meta(request_id=str(uuid.uuid4())),
+    )
+
+
+@router.get(
+    "/sessions/{session_id}",
+    response_model=SessionLookupResponse,
+    dependencies=[Depends(require_admin)],
+)
+async def get_session(
+    session_id: UUID,
+    db: AsyncSession = Depends(get_db),
+) -> SessionLookupResponse:
+    """
+    Admin-only session registry lookup (ARC-14).
+    Returns tableau_user_id for a given session_id.
+    tableau_user_id IS PII — this endpoint must remain admin-only.
+    """
+    result = await db.execute(
+        select(UserSession).where(UserSession.session_id == session_id)
+    )
+    session = result.scalar_one_or_none()
+    if session is None:
+        raise HTTPException(status_code=404, detail=f"Session '{session_id}' not found")
+
+    return SessionLookupResponse(
+        data=SessionLookupData(
+            session_id=session.session_id,
+            tableau_user_id=session.tableau_user_id,
+        ),
+        meta=Meta(request_id=str(uuid.uuid4())),
+    )

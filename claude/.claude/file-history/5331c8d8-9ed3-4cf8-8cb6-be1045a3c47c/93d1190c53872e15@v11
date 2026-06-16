@@ -1,0 +1,279 @@
+---
+stepsCompleted: ['step-01-init', 'step-02-discovery', 'step-02b-vision', 'step-02c-executive-summary', 'step-03-success', 'step-04-journeys', 'step-05-domain', 'step-06-innovation', 'step-07-project-type']
+inputDocuments: ['_bmad-output/planning-artifacts/product-brief-autom9.md']
+workflowType: 'prd'
+briefCount: 1
+researchCount: 0
+brainstormingCount: 0
+projectDocsCount: 0
+classification:
+  projectType: saas_b2b
+  domain: general
+  complexity: medium
+  projectContext: greenfield
+---
+
+# Product Requirements Document - autom9
+
+**Author:** CodeBeard
+**Date:** 2026-04-08
+
+## Executive Summary
+
+autom9 is a Tableau dashboard extension that embeds an AI agent directly into the planning tool consultants already use as their system of record. The agent enables consultants to complete planning workflows — submitting Smartsheet requests, creating Google Calendar invites, picking up open work — without leaving Tableau. The core insight: the problem is not data visibility, which Tableau already solves, but the broken link between seeing data and acting on it. Every alternative requires pulling data out of context; autom9 closes that loop inside the tool.
+
+The POC targets ~80 consultants at a professional services firm. The underlying platform — BYOM (OpenAI and Anthropic), JSON-configured workflows, no external automation dependency — is designed to support multiple agent use cases beyond the initial planning assistant. The POC proves the value of the first use case and the extensibility of the platform simultaneously.
+
+### What Makes This Special
+
+**Workflow completion in a single surface.** Tableau is where consultants review their planning data; autom9 is where they act on it — same tab, same context, no handoff to Slack, Smartsheet, or email. This is architecturally only possible as a native Tableau Extension.
+
+**BYOM + JSON-driven extensibility.** New agent workflows are added via configuration, not bespoke engineering. The platform is explicitly designed to support a growing library of agent workflows. This directly counters Salesforce Einstein's model-locked, CRM-centric approach to AI in Tableau.
+
+**No direct competitor.** No commercially available Tableau extension offers BYOM agentic workflows with external tool integration. The competitive window is estimated at 12–18 months before Salesforce closes it with a native Agentforce integration.
+
+## Project Classification
+
+| | |
+|---|---|
+| **Project Type** | B2B SaaS / Platform |
+| **Domain** | AI / Workflow Automation |
+| **Complexity** | Medium |
+| **Project Context** | Greenfield |
+
+## Success Criteria
+
+### User Success
+
+- **Primary metric:** 60%+ of the 80 POC consultants complete at least one workflow action per week within 60 days of launch. A workflow action is defined as a completed Smartsheet planning request submitted via the extension. Google Calendar invite creation is tracked but optional for this threshold.
+- **Qualitative signal:** Testimonials from consultants citing measurable reduction in time spent on scheduling logistics and fewer context switches across tools.
+
+### Business Success
+
+- POC demonstrates that the consultant planning assistant creates genuine, repeatable value for the target user group — evidenced by adoption rate and qualitative feedback.
+- The platform's extensibility is validated internally by successfully configuring and deploying at least one additional agent workflow using the JSON system (post-POC, not a v1 deliverable).
+
+### Technical Success
+
+- All agent interactions are logged with sufficient detail to diagnose issues, trace failed tool calls, and identify latency patterns.
+- Agent responses complete within 20 seconds during the POC phase (nice-to-have target; no async/background execution required for v1).
+- The extension architecture supports future air-gapped deployment: local LLM integration and fully local extension install (no external cloud dependency). This is a design constraint for v1, not a v1 deliverable.
+
+### Measurable Outcomes
+
+| Metric | Target | Timeframe |
+|---|---|---|
+| Weekly active users (workflow completion) | 60%+ of 80 consultants | 60 days post-launch |
+| Smartsheet requests submitted via extension | Tracked per user | Ongoing |
+| Agent response time (p95) | ≤20 seconds (nice-to-have) | POC phase |
+| Failed/errored agent interactions | Logged and reviewable | At launch |
+
+## Product Scope
+
+### MVP — Minimum Viable Product
+
+- Consultant planning view: open days surfaced from Snowflake via Tableau data source
+- Task ingestion from individual Google Docs with clarifying Q&A in the chat panel
+- Smartsheet planning request trigger from the extension
+- Google Calendar invite creation around existing engagements
+- Org-wide open work board (Google Doc) with consultant matching flow
+- BYOM: OpenAI and Anthropic support
+- JSON workflow configuration system
+- Agent interaction logging
+- Tableau Desktop (development) + Tableau Cloud/Server (production)
+
+### Growth Features (Post-MVP)
+
+- At least one additional agent workflow configured and deployed via JSON (internal validation of platform extensibility)
+- Expanded logging and analytics: adoption dashboards, workflow completion rates
+- Additional BYOM model support
+- Slack integration: surface open work requests from messages tagged with a specific emoji as an alternative input source to the org-wide Google Doc
+- Licensing mechanism: customers receive a license key embedded in their `.trex` file, validated against their registered Tableau URL on load
+
+### Vision (Future)
+
+- Local LLM support for air-gapped / no-cloud-dependency deployment
+- Fully local extension install (self-hosted, enterprise-grade isolation)
+- Open marketplace of Tableau agent workflows
+- Manager/team-level views across multiple consultants
+- Consulting Accelerator: packaged product for professional services firms
+
+## User Journeys
+
+### Journey 1: Consultant — Planning Request (Happy Path)
+
+**Meet Priya.** She's a consultant three weeks into a new engagement, with two open days next week and a task list she's been meaning to work through. It's Monday morning, and she opens the Planning dashboard in Tableau — the same place she always starts her week. On the right side of the screen, the autom9 panel is waiting.
+
+She clicks into the chat. The agent already knows her open days from the Tableau data source — it surfaces them without her having to ask. It's also read her Google Doc task list overnight and has two questions: one project has a kick-off she said was flexible — is next Thursday still okay? And there's a client deliverable she flagged as urgent — does she want to block time around it?
+
+She answers both questions in plain language. The agent submits the Smartsheet planning request and creates the Google Calendar invites around her existing commitments. She closes the panel. The whole interaction took four minutes. She didn't open Slack, she didn't navigate to Smartsheet, she didn't toggle between tabs.
+
+**Requirements revealed:** Snowflake/Tableau data read, Google Docs ingestion, clarifying Q&A in chat, Smartsheet integration, Google Calendar integration, session context retention.
+
+---
+
+### Journey 2: Consultant — Open Work Opportunity
+
+**Meet James.** He has three open days next week and no pending task list items beyond BAU. He opens his Planning dashboard and the autom9 panel surfaces open work opportunities — first billable client requests, then internal projects. Billable work always surfaces first; the agent doesn't mix the two without making the distinction clear.
+
+The agent doesn't just surface the opportunity — it checks James's availability against the commitment requested. There's a client team that needs someone with his background for a two-day workshop. The agent reads his open days from Snowflake, applies a 5% buffer to the time estimate, and confirms he can credibly commit before presenting it as an option. If he can't cover the full ask plus buffer, it flags the constraint rather than proposing a commitment he can't honour.
+
+The agent asks: is he the right fit, and is he willing to contribute? James reads the brief pulled from the org-wide Google Doc. He says yes. The agent logs his interest and flags the coordinator.
+
+If James had said no — wrong timing, wrong fit — the agent acknowledges it, logs the decline, and doesn't resurface the same opportunity. If the open work is an internal project and a billable opportunity also exists for the same window, the billable opportunity was already shown first. James made a deliberate choice.
+
+**Requirements revealed:** Org-wide Google Doc read (billable + internal work, typed separately), priority logic (billable > internal), availability + buffer calculation (open days vs. time requested + 5%), accept/decline flow, coordinator notification, open work board flag/write-back.
+
+---
+
+### Journey 3: Admin / Configurator — Extension Setup
+
+**Meet the person who has to make this work before Priya and James ever open it.** They're technical but not an AI engineer — maybe an ops lead or internal tools developer. Their job: get autom9 installed on Tableau Cloud, point it at the right data sources, and configure the consultant planning workflow.
+
+They install the extension via the Tableau extension gallery (or a local `.trex` file in development). They open the configuration panel and set the BYOM credentials — an Anthropic API key to start. They load the JSON workflow config file for the consultant planning assistant, which defines the tools available (Snowflake read, Google Docs read, Smartsheet write, Calendar write) and the agent's instructions.
+
+They run a test query against the Snowflake data source to confirm the connection. The agent responds correctly. They check the logs — the test interaction is recorded cleanly. They mark the workflow as active.
+
+When something breaks in week two — a Google OAuth token expires — they go to the logs first. The failed tool call is there with enough context to diagnose. They refresh the token, retest, done.
+
+**Requirements revealed:** Extension install flow (Tableau Desktop + Cloud), BYOM credential configuration, JSON workflow loader, tool connection testing, logging interface for admin diagnostics, OAuth/credential management.
+
+---
+
+### Journey Requirements Summary
+
+| Capability Area | Revealed By |
+|---|---|
+| Snowflake/Tableau data read | Journey 1, 3 |
+| Google Docs ingestion (individual + org-wide) | Journey 1, 2 |
+| Clarifying Q&A in chat panel | Journey 1 |
+| Smartsheet planning request | Journey 1 |
+| Google Calendar invite creation | Journey 1 |
+| Open work matching + priority logic (billable > internal) | Journey 2 |
+| Availability + buffer calculation (open days vs. request + 5%) | Journey 2 |
+| Accept/decline flow + coordinator notification | Journey 2 |
+| BYOM credential configuration | Journey 3 |
+| JSON workflow configuration loader | Journey 3 |
+| Agent interaction logging + admin diagnostics | Journey 3 |
+| Extension install (Tableau Desktop + Cloud) | Journey 3 |
+
+## Domain-Specific Requirements
+
+### Data Access & Privacy
+
+- The agent can read org-wide planning data for v1. Per-user data scoping (agent limited to authenticated consultant's own records only) is a future hardening, not a POC requirement.
+- Consultant planning data (names, client assignments, engagement details, open days) must not be transmitted to external LLM providers in identifiable form.
+- **Data masking pattern:** Before sending any context to the LLM, the agent replaces identifiable fields with opaque tokens (e.g. `CLIENT_A`, `ENGAGEMENT_001`, `CONSULTANT_X`). A token map is held in memory for the duration of the session. When the LLM response is received, real values are rehydrated from the token map before any output is displayed or any action is taken. The LLM never sees real names or client identifiers.
+- This masking applies to all LLM calls regardless of which BYOM provider is configured.
+
+### Credential Management
+
+- External integration credentials (Google OAuth, Smartsheet API key, Snowflake connection) are stored at the org level for v1.
+- Group-level credential scoping is a v2 consideration.
+- Credentials are not exposed in logs, config files, or the chat interface under any circumstances.
+
+### Integration Reliability
+
+- On extension load, a status check is performed against all configured integrations (Snowflake, Google Docs, Smartsheet, Google Calendar, LLM provider). Any unavailable service is surfaced to the consultant before they begin interacting — not mid-workflow.
+- If an integration fails during a workflow, the agent fails gracefully with a clear, specific message and does not partially complete actions that depend on it.
+- Status check results are logged for admin diagnostics.
+
+### Risk Mitigations
+
+| Risk | Mitigation |
+|---|---|
+| Real consultant/client data sent to LLM | Token-based masking before LLM call; rehydration after response |
+| Credential exposure | Org-level secure storage; never logged or surfaced in UI |
+| Mid-workflow integration failure | Graceful failure with clear messaging; no partial execution |
+| Overly broad data access | Per-user scoping deferred to v2; org-wide read acceptable for POC |
+
+## Innovation & Novel Patterns
+
+### Detected Innovation Areas
+
+**1. Embedded agentic AI in a BI tool**
+autom9 is the first commercially available Tableau extension to offer BYOM agentic workflows with external tool integration. The innovation is not just the AI agent — it's the architectural decision to embed it *inside* the BI tool rather than alongside it. This is only possible because Tableau's Extensions API allows third-party panels to render within the dashboard surface and read the underlying data context. No existing product combines this with LLM orchestration and multi-tool action execution.
+
+**2. Bring-Your-Own-Model (BYOM) in an enterprise BI context**
+Salesforce Einstein and Tableau Pulse lock users into Salesforce's model stack. autom9's BYOM architecture — supporting OpenAI and Anthropic from day one, with local model compatibility planned — is a direct counter-positioning to the model-lock that enterprise teams are increasingly pushing back on. This is a novel proposition in the Tableau ecosystem.
+
+**3. JSON-driven workflow configuration as the extension mechanism**
+Rather than treating new agent use-cases as software releases, autom9's JSON workflow system makes them configuration. This is the pattern that unlocks the marketplace thesis: a third-party developer can ship a new Tableau agent workflow without touching the core platform. No comparable pattern exists in the current Tableau extension ecosystem.
+
+**4. Token-based data masking for LLM privacy in enterprise workflows**
+The decision to mask identifiable data before LLM calls and rehydrate after is a novel approach to enterprise AI privacy that avoids the typical tradeoff of either exposing data to the model or losing reasoning quality. This is an emerging pattern in enterprise AI but not yet standard in embedded BI tooling.
+
+### Market Context & Competitive Landscape
+
+- **Tableau native AI (Einstein, Pulse):** Reactive Q&A, cloud-only, model-locked, no external tool integration. Does not support workflow execution.
+- **n8n / Zapier + Tableau connectors:** External automation platforms that require data to leave Tableau context. No embedded experience.
+- **Standalone AI planning tools:** Require separate login, data sync, and context-switching — the exact problem autom9 solves.
+- **Estimated competitive window:** 12–18 months before Salesforce closes the gap with a native Agentforce-in-Tableau integration, which will be CRM-centric and model-locked by design.
+
+### Validation Approach
+
+- **POC as proof:** The 60-consultant POC is the primary validation mechanism — adoption rate and qualitative feedback validate that embedded agentic workflows create genuine value.
+- **Extensibility proof:** At least one additional agent workflow configured via JSON during or after the POC validates the platform thesis without requiring a full product release.
+- **BYOM proof:** Supporting both OpenAI and Anthropic from day one and swapping between them with a config change validates that the BYOM architecture is real, not aspirational.
+
+### Risk Mitigation
+
+| Innovation Risk | Mitigation |
+|---|---|
+| Tableau Extensions API limitations constrain agent capabilities | Early prototyping against API limits; scope POC to what the API demonstrably supports |
+| LLM reasoning quality degrades with token masking | Validate masking/rehydration accuracy in testing; tune token scheme for semantic coherence |
+| JSON workflow system proves too rigid for real use-cases | Validate with second workflow during POC period; adjust schema before v2 |
+| Salesforce closes competitive window faster than expected | Speed to a loved, adopted POC is the strategic priority — ship before the window narrows |
+
+## B2B SaaS Specific Requirements
+
+### Project-Type Overview
+
+autom9 is a B2B SaaS platform delivered as a Tableau extension. It is not multi-tenant in the traditional web app sense — the primary unit of deployment is a Tableau environment (org or Tableau Cloud site). The platform supports two delivery models that will shape its commercial evolution beyond the POC.
+
+### Tenancy Model
+
+| Delivery Model | Description | Target Customer |
+|---|---|---|
+| **Cloud (Shared Backend)** | Customer firm is a tenant on autom9's shared infrastructure. Each tenant has isolated data, credentials, and workflow configuration. | Standard subscription customers |
+| **Self-Hosted (Premium)** | Full autom9 stack deployed within the customer's own infrastructure. No data leaves their environment. Requires local LLM support for full air-gap. | Privacy-conscious enterprises; regulated industries |
+
+**POC context:** Single-tenant installation within one firm's Tableau environment. Tenancy architecture is a v2+ concern; the POC should not be designed to preclude either model.
+
+### Permission Model
+
+Two roles for v1:
+
+| Role | Capabilities |
+|---|---|
+| **Admin / Configurator** | Install extension, configure BYOM credentials (org-level), load and update JSON workflow config, access agent interaction logs, manage integration connections |
+| **Consultant (User)** | Interact with the agent via the chat panel, complete planning workflows, accept/decline open work opportunities |
+
+No additional permission distinctions in v1. Model/provider selection is admin-controlled; consultants cannot override it.
+
+### Integration List
+
+| Integration | Direction | Purpose |
+|---|---|---|
+| Snowflake (via Tableau) | Read | Consultant planning data, open days |
+| Google Docs (individual) | Read | Consultant task list |
+| Google Docs (org-wide) | Read | Open work board (billable + internal) |
+| Smartsheet | Write | Planning request submission |
+| Google Calendar | Write | Calendar invite creation |
+| OpenAI API | Outbound | LLM inference (BYOM option 1) |
+| Anthropic API | Outbound | LLM inference (BYOM option 2) |
+
+### Subscription Tiers (Future)
+
+| Tier | Model | Notes |
+|---|---|---|
+| Cloud | Shared backend, per-tenant isolation | Standard offering |
+| Self-Hosted (Premium) | Customer-managed infrastructure | Requires local LLM; air-gap compatible |
+
+Pricing model not defined for v1 POC.
+
+### Implementation Considerations
+
+- The extension is distributed as a `.trex` file for Tableau Desktop (development) and registered in Tableau Cloud/Server (production).
+- The JSON workflow configuration system must be versionable — changes to workflow config should not break in-flight sessions.
+- Tenant isolation in the shared backend model requires that credentials, workflow configs, and logs are scoped strictly per tenant.

@@ -1,0 +1,197 @@
+from unittest.mock import AsyncMock, patch
+
+import pytest
+from httpx import AsyncClient
+
+from app.agent.provider import LLMResponse
+
+pytestmark = pytest.mark.asyncio(loop_scope="session")
+
+ADMIN_HEADERS = {"X-Autom9-Token": "test-backend-secret"}
+
+
+# ---------------------------------------------------------------------------
+# Auth
+# ---------------------------------------------------------------------------
+
+
+async def test_test_integration_requires_admin(client: AsyncClient):
+    response = await client.post("/api/integrations/smartsheet/test")
+    assert response.status_code == 401
+
+
+# ---------------------------------------------------------------------------
+# 404 for unknown integration
+# ---------------------------------------------------------------------------
+
+
+async def test_test_unknown_integration_returns_404(client: AsyncClient):
+    response = await client.post(
+        "/api/integrations/nonexistent/test", headers=ADMIN_HEADERS
+    )
+    assert response.status_code == 404
+
+
+# ---------------------------------------------------------------------------
+# Known integrations — stub health_check returns "unavailable" (expected in v1)
+# ---------------------------------------------------------------------------
+
+
+async def test_test_smartsheet_returns_200(client: AsyncClient):
+    response = await client.post(
+        "/api/integrations/smartsheet/test", headers=ADMIN_HEADERS
+    )
+    assert response.status_code == 200
+    body = response.json()
+    assert body["data"]["name"] == "smartsheet"
+    assert body["data"]["status"] == "unavailable"
+    assert body["data"]["error"] is not None
+    assert "request_id" in body["meta"]
+
+
+async def test_test_google_calendar_returns_200(client: AsyncClient):
+    response = await client.post(
+        "/api/integrations/google_calendar/test", headers=ADMIN_HEADERS
+    )
+    assert response.status_code == 200
+    assert response.json()["data"]["name"] == "google_calendar"
+
+
+async def test_test_google_docs_returns_200(client: AsyncClient):
+    response = await client.post(
+        "/api/integrations/google_docs/test", headers=ADMIN_HEADERS
+    )
+    assert response.status_code == 200
+    assert response.json()["data"]["name"] == "google_docs"
+
+
+async def test_test_tableau_data_returns_200(client: AsyncClient):
+    response = await client.post(
+        "/api/integrations/tableau_data/test", headers=ADMIN_HEADERS
+    )
+    assert response.status_code == 200
+    assert response.json()["data"]["name"] == "tableau_data"
+
+
+async def test_test_integration_response_has_required_fields(client: AsyncClient):
+    response = await client.post(
+        "/api/integrations/smartsheet/test", headers=ADMIN_HEADERS
+    )
+    body = response.json()
+    assert "data" in body
+    assert "meta" in body
+    data = body["data"]
+    assert "name" in data
+    assert "status" in data
+    assert data["status"] in ("healthy", "unavailable")
+    assert "latency_ms" in data
+    assert "error" in data
+
+
+# ---------------------------------------------------------------------------
+# LLM integration test — no active credential (default test DB state)
+# ---------------------------------------------------------------------------
+
+
+async def test_test_llm_no_active_credential_returns_unavailable(client: AsyncClient):
+    """LLM test with no configured provider returns 200 with unavailable status."""
+    response = await client.post(
+        "/api/integrations/llm/test", headers=ADMIN_HEADERS
+    )
+    assert response.status_code == 200
+    body = response.json()
+    assert body["data"]["name"] == "llm"
+    assert body["data"]["status"] == "unavailable"
+    assert body["data"]["error"] is not None
+
+
+# ---------------------------------------------------------------------------
+# LLM integration test — active credential + mocked provider
+# ---------------------------------------------------------------------------
+
+
+async def test_test_llm_with_healthy_provider_returns_healthy(client: AsyncClient):
+    """LLM test with mocked healthy provider returns status=healthy."""
+    mock_provider = AsyncMock()
+    mock_provider.complete = AsyncMock(
+        return_value=LLMResponse(content="pong", tool_calls=[], finish_reason="stop")
+    )
+
+    with patch("app.api.integrations.get_provider", return_value=mock_provider):
+        response = await client.post(
+            "/api/integrations/llm/test", headers=ADMIN_HEADERS
+        )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["data"]["name"] == "llm"
+    assert body["data"]["status"] == "healthy"
+    assert body["data"]["error"] is None
+    assert body["data"]["latency_ms"] is not None
+
+
+async def test_test_llm_provider_error_returns_unavailable(client: AsyncClient):
+    """LLM test where provider.complete() raises ProviderError returns unavailable."""
+    from app.core.exceptions import ProviderError
+
+    mock_provider = AsyncMock()
+    mock_provider.complete = AsyncMock(
+        side_effect=ProviderError("openai", "invalid API key")
+    )
+
+    with patch("app.api.integrations.get_provider", return_value=mock_provider):
+        response = await client.post(
+            "/api/integrations/llm/test", headers=ADMIN_HEADERS
+        )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["data"]["name"] == "llm"
+    assert body["data"]["status"] == "unavailable"
+    assert "invalid API key" in body["data"]["error"]
+
+
+# ---------------------------------------------------------------------------
+# Independence — multiple tests can be called independently
+# ---------------------------------------------------------------------------
+
+
+async def test_test_integrations_are_independent(client: AsyncClient):
+    """Each integration test endpoint can be called independently with no interference."""
+    names = ["smartsheet", "google_calendar", "google_docs", "tableau_data"]
+    for name in names:
+        response = await client.post(
+            f"/api/integrations/{name}/test", headers=ADMIN_HEADERS
+        )
+        assert response.status_code == 200, f"Failed for {name}"
+
+
+# ---------------------------------------------------------------------------
+# No credentials in response
+# ---------------------------------------------------------------------------
+
+
+async def test_test_integration_response_contains_no_credentials(client: AsyncClient):
+    """Response body must not contain any API key values."""
+    await client.post(
+        "/api/admin/credentials",
+        json={"provider": "openai", "api_key": "sk-secret-key-value"},
+        headers=ADMIN_HEADERS,
+    )
+    response = await client.post(
+        "/api/integrations/llm/test", headers=ADMIN_HEADERS
+    )
+    assert "sk-secret-key-value" not in response.text
+
+
+# ---------------------------------------------------------------------------
+# Session header accepted
+# ---------------------------------------------------------------------------
+
+
+async def test_test_integration_accepts_session_header(client: AsyncClient):
+    response = await client.post(
+        "/api/integrations/smartsheet/test",
+        headers={**ADMIN_HEADERS, "X-Autom9-Session": "test-session-123"},
+    )
+    assert response.status_code == 200

@@ -1,0 +1,73 @@
+import pytest
+from httpx import AsyncClient
+
+pytestmark = pytest.mark.asyncio(loop_scope="session")
+
+
+async def test_status_returns_all_integrations(client: AsyncClient):
+    response = await client.get("/api/status")
+    assert response.status_code == 200
+    body = response.json()
+    assert "data" in body
+    assert "integrations" in body["data"]
+    names = [i["name"] for i in body["data"]["integrations"]]
+    assert set(names) == {"smartsheet", "google_calendar", "google_docs", "tableau_data"}
+
+
+async def test_status_all_items_have_required_fields(client: AsyncClient):
+    response = await client.get("/api/status")
+    assert response.status_code == 200
+    for item in response.json()["data"]["integrations"]:
+        assert "name" in item
+        assert "status" in item
+        assert item["status"] in ("healthy", "unavailable")
+        assert "latency_ms" in item
+        assert "error" in item
+
+
+async def test_status_returns_meta_request_id(client: AsyncClient):
+    response = await client.get("/api/status")
+    assert response.status_code == 200
+    assert "request_id" in response.json()["meta"]
+
+
+async def test_status_accepts_session_header(client: AsyncClient):
+    """Health check accepts X-Autom9-Session header without error."""
+    response = await client.get(
+        "/api/status",
+        headers={"X-Autom9-Session": "test-session-id"},
+    )
+    assert response.status_code == 200
+
+
+async def test_status_isolates_integration_failures(client: AsyncClient):
+    """All four integrations return results even if some are unavailable."""
+    response = await client.get("/api/status")
+    assert response.status_code == 200
+    integrations = response.json()["data"]["integrations"]
+    # All 4 must return results (isolation guarantee)
+    assert len(integrations) == 4
+
+
+async def test_status_handles_health_check_exception(client: AsyncClient):
+    """Integration that raises in health_check — endpoint still returns 200 for all 4."""
+    from unittest.mock import AsyncMock
+    from app.integrations import ALL_INTEGRATIONS
+
+    original = ALL_INTEGRATIONS[0].health_check
+
+    async def raising_health_check():
+        raise RuntimeError("Simulated contract violation")
+
+    ALL_INTEGRATIONS[0].health_check = raising_health_check  # type: ignore[method-assign]
+    try:
+        response = await client.get("/api/status")
+    finally:
+        ALL_INTEGRATIONS[0].health_check = original  # type: ignore[method-assign]
+
+    assert response.status_code == 200
+    integrations = response.json()["data"]["integrations"]
+    assert len(integrations) == 4
+    failing = next(i for i in integrations if i["name"] == ALL_INTEGRATIONS[0].name)
+    assert failing["status"] == "unavailable"
+    assert failing["error"] is not None

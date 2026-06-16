@@ -1,0 +1,22 @@
+import sys
+
+from pydantic import ValidationError
+from pydantic_settings import BaseSettings, SettingsConfigDict
+
+
+class Settings(BaseSettings):
+    model_config = SettingsConfigDict(env_file=".env", extra="ignore")
+
+    DATABASE_URL: str
+    ENCRYPTION_KEY: str
+    BACKEND_SECRET: str
+    LOG_LEVEL: str
+    DATABASE_POOL_BASE: int
+    DATABASE_POOL_OVERFLOW: int
+
+
+try:
+    settings = Settings()
+except ValidationError as e:
+    print(f"Configuration error — missing or invalid environment variables:\n{e}", file=sys.stderr)
+    sys.exit(1)

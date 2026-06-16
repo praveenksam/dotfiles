@@ -1,0 +1,19 @@
+from datetime import datetime
+from uuid import UUID
+from pydantic import BaseModel
+
+from app.schemas.status import Meta
+
+
+class SessionCreateRequest(BaseModel):
+    tableau_user_id: str
+
+
+class SessionData(BaseModel):
+    session_id: UUID
+    started_at: datetime
+
+
+class SessionCreateResponse(BaseModel):
+    data: SessionData
+    meta: Meta

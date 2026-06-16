@@ -1,0 +1,25 @@
+from typing import Literal
+
+from pydantic import BaseModel
+
+from app.schemas.status import Meta
+
+
+class TaskItem(BaseModel):
+    text: str  # Generic — not wired to planning-specific field names
+
+
+class TasksResponse(BaseModel):
+    data: list[TaskItem]
+    meta: Meta
+
+
+class OpportunityItem(BaseModel):
+    title: str
+    type: Literal["billable", "internal"]
+    details: str
+
+
+class OpenWorkResponse(BaseModel):
+    data: list[OpportunityItem]
+    meta: Meta

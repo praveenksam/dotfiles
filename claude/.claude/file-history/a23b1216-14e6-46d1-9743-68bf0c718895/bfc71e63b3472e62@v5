@@ -1,0 +1,758 @@
+# Story 3.1: Planning Data Display Panel
+
+Status: done
+
+## Story
+
+As a **consultant**,
+I want to see my open days and task list inside the extension panel,
+So that I have the context I need before starting a planning conversation with the agent.
+
+## Acceptance Criteria
+
+**Given** the extension has initialized and the consultant's Tableau session is active
+**When** `DataPanel.svelte` loads
+**Then** the consultant's open days and scheduled engagements are displayed, sourced from the Tableau worksheet data via `tableau.ts` (FR1)
+
+**Given** a Google Docs URL is configured for the consultant's individual task doc
+**When** the panel loads
+**Then** the task list is ingested from the Google Doc and rendered in the panel (FR2)
+
+**Given** the JSON workflow config specifies a Tableau worksheet name for data display
+**When** `DataPanel.svelte` loads
+**Then** it reads that worksheet via `tableau.ts` using the configured name — not a hardcoded worksheet identifier
+**And** `DataPanel.svelte` renders the returned data generically — layout is not wired to planning-specific field names
+
+**Given** the Snowflake/Tableau data source is unavailable or the worksheet name is not found
+**When** the data panel attempts to load
+**Then** a specific, plain-language error is shown in the panel — no raw exception details visible to the consultant
+
+**Given** the Google Docs integration is unavailable or the URL is not configured
+**When** task list ingestion fails
+**Then** the open days section still renders correctly — the two data sources are independently fallible (NFR9)
+
+---
+
+## Tasks / Subtasks
+
+### Review Findings
+
+- [x] [Review][Patch] Non-string items in `result.get("tasks", [])` cause unhandled HTTP 500 [autom9-backend/app/api/data.py]
+- [x] [Review][Patch] `loadWorksheetConfig()` silently conflates API error with unconfigured state — both return null → same "not configured" message [autom9-extension/src/components/DataPanel.svelte]
+- [x] [Review][Patch] No abort guard on DataPanel remount — stale promise writes to singleton `dataStore` on rapid unmount/remount [autom9-extension/src/components/DataPanel.svelte]
+- [x] [Review][Patch] Empty string passes `worksheet_name` schema validation — Pydantic `str` with no `min_length` [autom9-backend/app/config/workflow_schema.py]
+- [x] [Review][Patch] AC4 violation: raw `Worksheet "${name}" not found in dashboard` error message rendered directly to consultant [autom9-extension/src/components/DataPanel.svelte]
+- [x] [Review][Defer] No format constraints on `worksheet_name` field [autom9-backend/app/config/workflow_schema.py] — deferred, v1 acceptable; Tableau rejects invalid names at runtime
+- [x] [Review][Defer] No URL format validation for `google_docs_url` [autom9-backend/app/config/workflow_schema.py] — deferred, v1 scope
+- [x] [Review][Defer] No timeout on `getSummaryDataAsync()` Tableau API call [autom9-extension/src/lib/tableau.ts] — deferred, AbortController for Tableau API not established in v1
+- [x] [Review][Defer] Session header silently omitted when session not yet set — tasks logged as "unknown" [autom9-extension/src/components/DataPanel.svelte] — deferred, low risk audit trail gap
+
+### [x] Task 1 — Extend `WorkflowConfigSchema` with `data_panel` section
+
+Modify `autom9-backend/app/config/workflow_schema.py`. Add `DataPanelConfig` model and optional field on `WorkflowConfigSchema`:
+
+```python
+import re
+
+from pydantic import BaseModel, field_validator
+
+SEMVER_RE = re.compile(r"^\d+\.\d+\.\d+$")
+
+
+class ToolDefinition(BaseModel):
+    name: str
+    description: str
+    parameters: dict  # JSON Schema object; no deep validation in v1
+
+
+class DataPanelConfig(BaseModel):
+    worksheet_name: str
+    google_docs_url: str | None = None
+
+
+class WorkflowConfigSchema(BaseModel):
+    version: str
+    workflow_id: str
+    tools: list[ToolDefinition]
+    agent_instructions: str
+    data_panel: DataPanelConfig | None = None
+
+    @field_validator("version")
+    @classmethod
+    def version_is_semver(cls, v: str) -> str:
+        if not SEMVER_RE.match(v):
+            raise ValueError("version must be semver format, e.g. '1.0.0'")
+        return v
+
+    @field_validator("workflow_id")
+    @classmethod
+    def workflow_id_not_empty(cls, v: str) -> str:
+        if not v.strip():
+            raise ValueError("workflow_id must not be blank")
+        return v
+
+    @field_validator("agent_instructions")
+    @classmethod
+    def instructions_not_empty(cls, v: str) -> str:
+        if not v.strip():
+            raise ValueError("agent_instructions must not be blank")
+        return v
+```
+
+`data_panel` is optional so that:
+- Existing configs without it remain valid (backwards compatible — NFR10)
+- Story 3.1 can gracefully degrade when no config is loaded yet
+
+---
+
+### [x] Task 2 — Add `getWorksheetData()` to `autom9-extension/src/lib/tableau.ts`
+
+Extend `tableau.ts` with a worksheet-reading function. The Tableau Extensions API exposes worksheets via `window.tableau.extensions.dashboardContent.dashboard.worksheets`.
+
+```typescript
+export interface WorksheetRow {
+  [fieldName: string]: string;
+}
+
+/**
+ * Reads summary data from a named Tableau worksheet.
+ * Returns an array of row objects keyed by field name (formattedValue).
+ * Throws an Error if the worksheet is not found or data cannot be retrieved.
+ * Returns [] immediately when no Tableau runtime is present (dev/test).
+ */
+export async function getWorksheetData(worksheetName: string): Promise<WorksheetRow[]> {
+  if (typeof window === 'undefined' || !window.tableau) {
+    // Dev/test: no Tableau runtime — return empty data
+    return [];
+  }
+
+  const extensions = window.tableau.extensions as unknown as {
+    dashboardContent?: {
+      dashboard?: {
+        worksheets?: Array<{
+          name: string;
+          getSummaryDataAsync: () => Promise<{
+            columns: Array<{ fieldName: string }>;
+            data: Array<Array<{ formattedValue: string }>>;
+          }>;
+        }>;
+      };
+    };
+  };
+
+  const worksheets = extensions.dashboardContent?.dashboard?.worksheets ?? [];
+  const worksheet = worksheets.find((w) => w.name === worksheetName);
+  if (!worksheet) {
+    throw new Error(`Worksheet "${worksheetName}" not found in dashboard`);
+  }
+
+  const dataTable = await worksheet.getSummaryDataAsync();
+  const columns = dataTable.columns.map((c) => c.fieldName);
+  return dataTable.data.map((row) =>
+    Object.fromEntries(columns.map((col, i) => [col, row[i]?.formattedValue ?? '']))
+  );
+}
+```
+
+**Dev note:** `@tableau/extensions-api-types` is installed but the type definitions may not fully cover `dashboardContent`. Use the `as unknown as ...` cast pattern already established in `getTableauUserId()` to avoid missing type errors.
+
+---
+
+### [x] Task 3 — Create `app/schemas/data.py` (new file)
+
+Create `autom9-backend/app/schemas/data.py`:
+
+```python
+from pydantic import BaseModel
+
+from app.schemas.status import Meta
+
+
+class TaskItem(BaseModel):
+    text: str  # Generic — not wired to planning-specific field names
+
+
+class TasksResponse(BaseModel):
+    data: list[TaskItem]
+    meta: Meta
+```
+
+Follow the existing schema pattern: `LogEntry` → `LogsResponse`, `TaskItem` → `TasksResponse`.
+
+---
+
+### [x] Task 4 — Create `GET /api/data/tasks` endpoint
+
+Create `autom9-backend/app/api/data.py` (new file):
+
+```python
+import logging
+import uuid
+
+from fastapi import APIRouter, Header, HTTPException
+
+from app.config.workflow_registry import workflow_registry
+from app.core.exceptions import IntegrationError
+from app.integrations.google_docs import GoogleDocsIntegration
+from app.schemas.data import TaskItem, TasksResponse
+from app.schemas.status import Meta
+
+router = APIRouter(prefix="/api/data", tags=["data"])
+
+logger = logging.getLogger(__name__)
+
+_google_docs = GoogleDocsIntegration()
+
+
+@router.get(
+    "/tasks",
+    response_model=TasksResponse,
+    status_code=200,
+)
+async def get_tasks(
+    x_autom9_session: str | None = Header(default=None),
+) -> TasksResponse:
+    """
+    Fetch consultant task list from the configured Google Doc.
+
+    Reads google_docs_url from the active workflow config's data_panel section.
+    Returns 503 if integration is unavailable.
+    Returns 404 if no data_panel config is present.
+    No admin auth required — accessible to any session holder (same as /api/status).
+    """
+    active = workflow_registry.active_config
+    if active is None:
+        raise HTTPException(status_code=404, detail="No workflow config loaded")
+
+    data_panel = active.get("data_panel")
+    if not data_panel:
+        raise HTTPException(status_code=404, detail="data_panel not configured")
+
+    google_docs_url = data_panel.get("google_docs_url")
+    if not google_docs_url:
+        raise HTTPException(status_code=404, detail="google_docs_url not configured")
+
+    logger.info(
+        "data_tasks_fetch",
+        extra={
+            "session_id": x_autom9_session or "unknown",
+            "integration": "google_docs",
+        },
+    )
+
+    try:
+        result = await _google_docs.execute("fetch_tasks", {"url": google_docs_url})
+    except IntegrationError as exc:
+        logger.warning(
+            "data_tasks_fetch_failed",
+            extra={"integration": exc.integration, "error": str(exc)},
+        )
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+
+    tasks = [TaskItem(text=item) for item in result.get("tasks", [])]
+    return TasksResponse(data=tasks, meta=Meta(request_id=str(uuid.uuid4())))
+```
+
+Register in `autom9-backend/app/main.py`. After the `admin_logs_router` include, add:
+
+```python
+from app.api.data import router as data_router
+# ...
+app.include_router(data_router)
+```
+
+**Note:** `GoogleDocsIntegration` is currently a stub that raises `IntegrationError`. The 503 path will be exercised until the integration is implemented in a later story.
+
+---
+
+### [x] Task 5 — Update `GoogleDocsIntegration.execute()` contract
+
+The stub in `autom9-backend/app/integrations/google_docs.py` currently raises `IntegrationError` for any `execute()` call. This is the correct behaviour for now — the endpoint handles this by returning 503. No code change needed in the stub itself.
+
+Document the expected `fetch_tasks` response contract here so that when the real integration is implemented (future story), the data shape is clear:
+
+```python
+# Expected result dict when fully implemented:
+# {
+#   "tasks": ["Review engagement scope", "Update planning sheet", ...]
+# }
+```
+
+---
+
+### [x] Task 6 — Create `autom9-extension/src/stores/data.svelte.ts`
+
+Create `autom9-extension/src/stores/data.svelte.ts`:
+
+```typescript
+import type { WorksheetRow } from '../lib/tableau';
+
+export interface TaskItem {
+  text: string;
+}
+
+type DataLoadState = 'idle' | 'loading' | 'done' | 'error';
+
+class DataStore {
+  // Tableau worksheet panel
+  worksheetRows = $state<WorksheetRow[]>([]);
+  worksheetState = $state<DataLoadState>('idle');
+  worksheetError = $state<string | null>(null);
+
+  // Google Docs task list panel
+  tasks = $state<TaskItem[]>([]);
+  tasksState = $state<DataLoadState>('idle');
+  tasksError = $state<string | null>(null);
+}
+
+export const dataStore = new DataStore();
+```
+
+Follow the Svelte 5 runes class pattern from `session.svelte.ts` and `status.svelte.ts`.
+
+---
+
+### [x] Task 7 — Create `DataPanel.svelte`
+
+Create `autom9-extension/src/components/DataPanel.svelte`:
+
+```svelte
+<script lang="ts">
+  import { onMount } from 'svelte';
+  import { apiFetch, ApiError } from '../lib/api';
+  import { getWorksheetData } from '../lib/tableau';
+  import { sessionStore } from '../stores/session.svelte';
+  import { dataStore } from '../stores/data.svelte';
+
+  const sessionHeaders = (): Record<string, string> =>
+    sessionStore.sessionId ? { 'X-Autom9-Session': sessionStore.sessionId } : {};
+
+  // Read worksheet name from the active workflow config
+  async function loadWorksheetConfig(): Promise<string | null> {
+    try {
+      const config = await apiFetch<{ data: { data_panel?: { worksheet_name?: string } } | null }>(
+        '/api/config/workflow'
+      );
+      return config.data?.data_panel?.worksheet_name ?? null;
+    } catch {
+      return null;
+    }
+  }
+
+  async function loadWorksheetData(worksheetName: string): Promise<void> {
+    dataStore.worksheetState = 'loading';
+    try {
+      dataStore.worksheetRows = await getWorksheetData(worksheetName);
+      dataStore.worksheetState = 'done';
+    } catch (err) {
+      dataStore.worksheetError =
+        err instanceof Error ? err.message : 'Could not load worksheet data';
+      dataStore.worksheetState = 'error';
+    }
+  }
+
+  async function loadTasks(): Promise<void> {
+    dataStore.tasksState = 'loading';
+    try {
+      const response = await apiFetch<{ data: Array<{ text: string }> }>('/api/data/tasks', {
+        headers: sessionHeaders(),
+      });
+      dataStore.tasks = response.data;
+      dataStore.tasksState = 'done';
+    } catch (err) {
+      const msg =
+        err instanceof ApiError
+          ? err.message
+          : err instanceof Error
+            ? err.message
+            : 'Could not load task list';
+      dataStore.tasksError = msg;
+      dataStore.tasksState = 'error';
+    }
+  }
+
+  onMount(async () => {
+    const worksheetName = await loadWorksheetConfig();
+
+    // Both fetches run independently — one failure must not block the other (NFR9)
+    const worksheetPromise = worksheetName
+      ? loadWorksheetData(worksheetName)
+      : (() => {
+          dataStore.worksheetError = 'Worksheet name not configured';
+          dataStore.worksheetState = 'error';
+          return Promise.resolve();
+        })();
+
+    await Promise.allSettled([worksheetPromise, loadTasks()]);
+  });
+</script>
+
+<div class="data-panel">
+  <!-- Open days / scheduled engagements from Tableau worksheet -->
+  <section class="panel-section">
+    <h3>Open Days &amp; Engagements</h3>
+    {#if dataStore.worksheetState === 'loading'}
+      <p class="loading">Loading…</p>
+    {:else if dataStore.worksheetState === 'error'}
+      <p class="error">{dataStore.worksheetError}</p>
+    {:else if dataStore.worksheetRows.length === 0}
+      <p class="empty">No data available</p>
+    {:else}
+      <table>
+        <thead>
+          <tr>
+            {#each Object.keys(dataStore.worksheetRows[0]) as col}
+              <th>{col}</th>
+            {/each}
+          </tr>
+        </thead>
+        <tbody>
+          {#each dataStore.worksheetRows as row}
+            <tr>
+              {#each Object.values(row) as val}
+                <td>{val}</td>
+              {/each}
+            </tr>
+          {/each}
+        </tbody>
+      </table>
+    {/if}
+  </section>
+
+  <!-- Task list from Google Docs -->
+  <section class="panel-section">
+    <h3>Task List</h3>
+    {#if dataStore.tasksState === 'loading'}
+      <p class="loading">Loading…</p>
+    {:else if dataStore.tasksState === 'error'}
+      <p class="error">{dataStore.tasksError}</p>
+    {:else if dataStore.tasks.length === 0}
+      <p class="empty">No tasks available</p>
+    {:else}
+      <ul>
+        {#each dataStore.tasks as task}
+          <li>{task.text}</li>
+        {/each}
+      </ul>
+    {/if}
+  </section>
+</div>
+
+<style>
+  .data-panel {
+    font-family: sans-serif;
+    padding: 0.75rem;
+  }
+  .panel-section {
+    margin-bottom: 1.25rem;
+  }
+  h3 {
+    font-size: 0.875rem;
+    font-weight: 600;
+    margin: 0 0 0.5rem;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    color: #444;
+  }
+  .loading { color: #666; font-style: italic; }
+  .error { color: #c00; }
+  .empty { color: #888; }
+  table { border-collapse: collapse; width: 100%; font-size: 0.8rem; }
+  th, td { border: 1px solid #ddd; padding: 0.25rem 0.5rem; text-align: left; }
+  th { background: #f5f5f5; }
+  ul { margin: 0; padding-left: 1.25rem; font-size: 0.875rem; }
+  li { margin-bottom: 0.25rem; }
+</style>
+```
+
+**Critical rendering constraints:**
+- Table columns come from worksheet field names — no hardcoded column names (AC: "generic structured data")
+- `Promise.allSettled` ensures one failure does not abort the other (NFR9)
+- Errors show plain-language messages — no `err.code` or stack traces visible to consultant
+
+---
+
+### [x] Task 8 — Wire `DataPanel.svelte` into `App.svelte`
+
+In `autom9-extension/src/App.svelte`, import `DataPanel` and replace the Epic 3 placeholder comment:
+
+```svelte
+<script lang="ts">
+  // ... existing imports ...
+  import DataPanel from './components/DataPanel.svelte';
+</script>
+```
+
+In the `{:else}` (ready) branch, replace:
+```svelte
+<!-- Chat panel and data panel added in Epic 3 stories -->
+```
+with:
+```svelte
+<DataPanel />
+<!-- Chat panel added in Epic 3 story 3.3 -->
+```
+
+---
+
+### [x] Task 9 — Write backend tests for `GET /api/data/tasks`
+
+Create `autom9-backend/tests/api/test_data.py`:
+
+```python
+import pytest
+from httpx import AsyncClient
+
+pytestmark = pytest.mark.asyncio(loop_scope="session")
+
+SESSION_HEADERS = {"X-Autom9-Session": "test-session-id"}
+
+
+# ---------------------------------------------------------------------------
+# GET /api/data/tasks — no config loaded
+# ---------------------------------------------------------------------------
+
+
+async def test_get_tasks_no_config_returns_404(client: AsyncClient):
+    """When no workflow config is loaded, endpoint returns 404."""
+    response = await client.get("/api/data/tasks", headers=SESSION_HEADERS)
+    assert response.status_code == 404
+
+
+# ---------------------------------------------------------------------------
+# GET /api/data/tasks — config without data_panel
+# ---------------------------------------------------------------------------
+
+
+async def test_get_tasks_no_data_panel_returns_404(client: AsyncClient, monkeypatch):
+    import app.api.data as data_module
+    from app.config.workflow_registry import WorkflowRegistry
+
+    registry = WorkflowRegistry()
+    registry._active = {
+        "version": "1.0.0",
+        "workflow_id": "test",
+        "tools": [],
+        "agent_instructions": "test",
+        # no data_panel key
+    }
+    monkeypatch.setattr(data_module, "workflow_registry", registry)
+
+    response = await client.get("/api/data/tasks", headers=SESSION_HEADERS)
+    assert response.status_code == 404
+
+
+# ---------------------------------------------------------------------------
+# GET /api/data/tasks — config with data_panel but no google_docs_url
+# ---------------------------------------------------------------------------
+
+
+async def test_get_tasks_no_google_docs_url_returns_404(client: AsyncClient, monkeypatch):
+    import app.api.data as data_module
+    from app.config.workflow_registry import WorkflowRegistry
+
+    registry = WorkflowRegistry()
+    registry._active = {
+        "version": "1.0.0",
+        "workflow_id": "test",
+        "tools": [],
+        "agent_instructions": "test",
+        "data_panel": {"worksheet_name": "Sheet1"},  # no google_docs_url
+    }
+    monkeypatch.setattr(data_module, "workflow_registry", registry)
+
+    response = await client.get("/api/data/tasks", headers=SESSION_HEADERS)
+    assert response.status_code == 404
+
+
+# ---------------------------------------------------------------------------
+# GET /api/data/tasks — integration stub raises IntegrationError → 503
+# ---------------------------------------------------------------------------
+
+
+async def test_get_tasks_integration_unavailable_returns_503(client: AsyncClient, monkeypatch):
+    import app.api.data as data_module
+    from app.config.workflow_registry import WorkflowRegistry
+    from app.core.exceptions import IntegrationError
+
+    registry = WorkflowRegistry()
+    registry._active = {
+        "version": "1.0.0",
+        "workflow_id": "test",
+        "tools": [],
+        "agent_instructions": "test",
+        "data_panel": {"worksheet_name": "Sheet1", "google_docs_url": "https://docs.example.com/d/abc"},
+    }
+    monkeypatch.setattr(data_module, "workflow_registry", registry)
+
+    # Stub integration that raises
+    class _FailingDocs:
+        async def execute(self, action: str, params: dict) -> dict:
+            raise IntegrationError("google_docs", "Google Docs not configured")
+
+    monkeypatch.setattr(data_module, "_google_docs", _FailingDocs())
+
+    response = await client.get("/api/data/tasks", headers=SESSION_HEADERS)
+    assert response.status_code == 503
+
+
+# ---------------------------------------------------------------------------
+# GET /api/data/tasks — happy path
+# ---------------------------------------------------------------------------
+
+
+async def test_get_tasks_returns_task_list(client: AsyncClient, monkeypatch):
+    import app.api.data as data_module
+    from app.config.workflow_registry import WorkflowRegistry
+
+    registry = WorkflowRegistry()
+    registry._active = {
+        "version": "1.0.0",
+        "workflow_id": "test",
+        "tools": [],
+        "agent_instructions": "test",
+        "data_panel": {"worksheet_name": "Sheet1", "google_docs_url": "https://docs.example.com/d/abc"},
+    }
+    monkeypatch.setattr(data_module, "workflow_registry", registry)
+
+    class _StubDocs:
+        async def execute(self, action: str, params: dict) -> dict:
+            return {"tasks": ["Review scope", "Update sheet"]}
+
+    monkeypatch.setattr(data_module, "_google_docs", _StubDocs())
+
+    response = await client.get("/api/data/tasks", headers=SESSION_HEADERS)
+    assert response.status_code == 200
+    body = response.json()
+    assert "data" in body
+    assert "meta" in body
+    assert len(body["data"]) == 2
+    assert body["data"][0]["text"] == "Review scope"
+
+
+async def test_get_tasks_response_has_request_id(client: AsyncClient, monkeypatch):
+    import app.api.data as data_module
+    from app.config.workflow_registry import WorkflowRegistry
+
+    registry = WorkflowRegistry()
+    registry._active = {
+        "version": "1.0.0",
+        "workflow_id": "test",
+        "tools": [],
+        "agent_instructions": "test",
+        "data_panel": {"worksheet_name": "Sheet1", "google_docs_url": "https://docs.example.com/d/abc"},
+    }
+    monkeypatch.setattr(data_module, "workflow_registry", registry)
+
+    class _StubDocs:
+        async def execute(self, action: str, params: dict) -> dict:
+            return {"tasks": []}
+
+    monkeypatch.setattr(data_module, "_google_docs", _StubDocs())
+
+    response = await client.get("/api/data/tasks", headers=SESSION_HEADERS)
+    assert response.status_code == 200
+    assert "request_id" in response.json()["meta"]
+```
+
+**Testing approach:** Use `monkeypatch` to set `workflow_registry._active` and `_google_docs` directly on the module — no DB required for these tests. This follows the pattern used in `test_integrations.py` for provider factory testing.
+
+---
+
+## Dev Notes
+
+### No migration required
+
+`DataPanel.svelte` and `GET /api/data/tasks` use no new DB tables. The Tableau worksheet is read client-side via the Extensions API; Google Docs is an external call via the existing `GoogleDocsIntegration` stub. No new Alembic version needed.
+
+### Workflow config backwards compatibility
+
+`data_panel` is optional in `WorkflowConfigSchema`. Existing configs that lack this field will still validate (`model_validate` ignores unknown fields by default in Pydantic v2 — note: this also means extra fields pass silently). Configs already stored in DB are re-parsed by `get_tool_definitions()` and `validate_schema()` — adding an optional field does not break those calls.
+
+### Tableau worksheet API — dev/test fallback
+
+`getWorksheetData()` returns `[]` immediately when no Tableau runtime is present. This means `DataPanel.svelte` in dev will show "No data available" in the worksheet section — expected. Tests do not need to mock the Tableau runtime.
+
+### Google Docs stub — current behaviour
+
+`GoogleDocsIntegration.execute()` always raises `IntegrationError("google_docs", "Google Docs not configured")`. The `GET /api/data/tasks` endpoint catches this and returns 503. The DataPanel frontend catches 503 (as `ApiError`) and shows the error in the tasks section while the worksheet section remains unaffected.
+
+### `Promise.allSettled` is mandatory
+
+Must use `Promise.allSettled` (not `Promise.all`) for the two independent data fetches in `onMount`. `Promise.all` rejects on first failure — this would break the NFR9 isolation guarantee.
+
+### `_google_docs` as module-level singleton
+
+Follows the pattern of `_INTEGRATION_MAP` in `app/api/integrations.py`. Module-level singleton is acceptable in v1 (single-process async). Avoid instantiating `GoogleDocsIntegration()` inside the request handler.
+
+### Generic rendering — no field name coupling
+
+The worksheet table renders `Object.keys(row[0])` as column headers. If the Tableau data source adds or renames a field, the panel still renders correctly. No conditional logic like `if col === "open_days"` anywhere in `DataPanel.svelte`.
+
+### File locations summary
+
+| File | Action |
+|------|--------|
+| `autom9-backend/app/config/workflow_schema.py` | Modify — add `DataPanelConfig`, `data_panel` field |
+| `autom9-backend/app/schemas/data.py` | Create — `TaskItem`, `TasksResponse` |
+| `autom9-backend/app/api/data.py` | Create — `GET /api/data/tasks` |
+| `autom9-backend/app/main.py` | Modify — import and include `data_router` |
+| `autom9-backend/tests/api/test_data.py` | Create — 6 tests |
+| `autom9-extension/src/lib/tableau.ts` | Modify — add `getWorksheetData()`, `WorksheetRow` |
+| `autom9-extension/src/stores/data.svelte.ts` | Create — `DataStore`, `dataStore` |
+| `autom9-extension/src/components/DataPanel.svelte` | Create — panel component |
+| `autom9-extension/src/App.svelte` | Modify — import + render `DataPanel` |
+
+### Previous story learnings (from 2.x)
+
+- All Pydantic schemas use `from app.schemas.status import Meta` for the `meta` envelope field.
+- Router prefix follows `/api/{resource}` pattern; tags are single lowercase strings.
+- `pytestmark = pytest.mark.asyncio(loop_scope="session")` at top of every test file.
+- `ADMIN_HEADERS` pattern: use named constants for test headers.
+- `monkeypatch` on module attributes (e.g. `monkeypatch.setattr(data_module, "_google_docs", ...)`) is safe within the test function scope — no inter-test leakage.
+- No `from __future__ import annotations` — Pydantic v2 handles `str | None` natively.
+- Response envelope: always `{data: ..., meta: {request_id: str}}`.
+
+### Review findings to apply pre-emptively
+
+From the deferred-work log, these patterns are already fixed in prior stories — enforce them here:
+- Latency measured with `time.monotonic()` (not hardcoded constants) — not applicable here but consistent pattern.
+- `except Exception` broad handlers in integration calls — already handled here via `except IntegrationError`.
+- Log entries must not include PII — `session_id` is logged as opaque UUID, no `tableau_user_id`.
+
+---
+
+## Dev Agent Record
+
+### Completion Notes
+
+All 9 tasks implemented and verified. 6 new backend tests pass; 134 total suite passes with zero regressions. TypeScript compiles clean.
+
+Key decisions:
+- `data_panel` field is optional on `WorkflowConfigSchema` — existing configs remain valid (NFR10 backwards compatibility).
+- `Promise.allSettled` in `DataPanel.svelte` `onMount` enforces NFR9 isolation — worksheet failure cannot block task list and vice versa.
+- `GET /api/data/tasks` returns 404 (not 503) when config is missing/incomplete — distinguishes "not configured" from "configured but unavailable".
+- `_google_docs` module-level singleton follows `_INTEGRATION_MAP` pattern from `integrations.py`.
+- `monkeypatch.setattr` on `data_module.workflow_registry` and `data_module._google_docs` avoids DB dependency in test suite.
+- TypeScript cast `as unknown as ...` in `getWorksheetData()` follows the established pattern in `getTableauUserId()` for Tableau API types not covered by `@tableau/extensions-api-types`.
+
+---
+
+## File List
+
+- `autom9-backend/app/config/workflow_schema.py` — modified (added `DataPanelConfig`, `data_panel` field)
+- `autom9-backend/app/schemas/data.py` — created (`TaskItem`, `TasksResponse`)
+- `autom9-backend/app/api/data.py` — created (`GET /api/data/tasks`)
+- `autom9-backend/app/main.py` — modified (import + include `data_router`)
+- `autom9-backend/app/integrations/google_docs.py` — modified (added `fetch_tasks` contract comment)
+- `autom9-backend/tests/api/test_data.py` — created (6 tests)
+- `autom9-extension/src/lib/tableau.ts` — modified (added `WorksheetRow`, `getWorksheetData()`)
+- `autom9-extension/src/stores/data.svelte.ts` — created (`DataStore`, `dataStore`)
+- `autom9-extension/src/components/DataPanel.svelte` — created (panel component)
+- `autom9-extension/src/App.svelte` — modified (import + render `DataPanel`)
+
+---
+
+## Change Log
+
+- 2026-04-24: Story 3.1 implemented — DataPanel, getWorksheetData, GET /api/data/tasks, WorkflowConfigSchema data_panel extension, 6 backend tests (134 total passing)

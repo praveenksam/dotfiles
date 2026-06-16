@@ -1,0 +1,283 @@
+# Story 1.1: Project Scaffolding & Backend Foundation
+
+Status: ready-for-dev
+
+## Story
+
+As an **admin/developer**,
+I want both the backend server and extension frontend scaffolded with all foundational tooling configured,
+So that the development team has a runnable, tested baseline to build every subsequent story on.
+
+## Acceptance Criteria
+
+1. **Given** the repository is freshly cloned **When** `docker compose up` is run **Then** the backend API container starts successfully and `GET /health` returns `{"status": "ok"}` **And** the PostgreSQL container starts and Alembic migrations run to completion (tables: `sessions`, `interaction_logs`, `credential_store`, `workflow_configs`) **And** if migrations fail, the container exits with a non-zero code and the app process never starts (fail-fast enforced)
+
+2. **Given** the frontend scaffold exists **When** `npm run dev` is run **Then** the Vite dev server starts and serves the extension shell on localhost
+
+3. **Given** `pytest` is run against the backend **When** tests execute **Then** `asyncio_mode = auto` is active, all fixtures are function-scoped, and the test suite passes with zero failures
+
+4. **Given** the pydantic-settings config is loaded **When** the app starts **Then** `DATABASE_URL`, `ENCRYPTION_KEY`, `BACKEND_SECRET`, `LOG_LEVEL`, `DATABASE_POOL_MIN`, `DATABASE_POOL_MAX` are all resolved from environment variables and the app exits with a clear error message if any required variable is missing
+
+## Tasks / Subtasks
+
+- [ ] **Task 1: Backend project scaffold** (AC: 1, 4)
+  - [ ] Run `uv init autom9-backend` — creates `pyproject.toml`, `.python-version`, `.venv`
+  - [ ] Run `uv add fastapi "uvicorn[standard]" sqlalchemy[asyncio] asyncpg alembic pydantic-settings python-jose httpx cryptography python-json-logger`
+  - [ ] Run `uv add --dev pytest pytest-asyncio httpx`
+  - [ ] Create `app/` directory tree: `api/`, `agent/`, `integrations/`, `models/`, `schemas/`, `config/`, `ops/`, `core/`
+  - [ ] Create empty `__init__.py` in each `app/` subdirectory
+
+- [ ] **Task 2: pydantic-settings configuration** (AC: 4)
+  - [ ] Create `app/core/config.py` with `Settings(BaseSettings)` class
+  - [ ] Import from `pydantic_settings` (separate package — NOT `pydantic`)
+  - [ ] Use `model_config = SettingsConfigDict(env_file=".env", extra="ignore")`
+  - [ ] Required fields (no defaults — app fails to start if missing): `DATABASE_URL`, `ENCRYPTION_KEY`, `BACKEND_SECRET`, `LOG_LEVEL`, `DATABASE_POOL_MIN: int`, `DATABASE_POOL_MAX: int`
+  - [ ] Wrap `settings = Settings()` in try/except ValidationError with `sys.exit(1)` and clear error message
+  - [ ] Create `.env.example` listing all required variables with placeholder values (do NOT create `.env` — must be in `.gitignore`)
+
+- [ ] **Task 3: SQLAlchemy async engine + Base** (AC: 1)
+  - [ ] Create `app/db/base.py` — `Base(DeclarativeBase)` with MetaData naming convention (ix_, uq_, ck_, fk_, pk_ prefixes)
+  - [ ] Create `app/db/engine.py` — `create_async_engine` with `pool_size=settings.DATABASE_POOL_MIN`, `max_overflow=settings.DATABASE_POOL_MAX`, `pool_pre_ping=True`, `pool_recycle=3600`
+  - [ ] Create `async_sessionmaker` with `expire_on_commit=False`
+  - [ ] Create `app/db/deps.py` — `get_db()` async generator dependency with commit/rollback
+
+- [ ] **Task 4: Data models** (AC: 1)
+  - [ ] Create `app/models/session.py` — `Session` model: `session_id: Mapped[UUID]` (pk, default uuid4), `tableau_user_id: Mapped[str]`, `started_at: Mapped[datetime]` (default utcnow). Table: `sessions`
+  - [ ] Create `app/models/interaction_log.py` — `InteractionLog` model: `id: Mapped[UUID]` (pk), `session_id: Mapped[UUID]` (FK → sessions.session_id), `masked_input: Mapped[str]`, `masked_output: Mapped[str | None]`, `tool_calls: Mapped[str | None]` (JSON string), `latency_ms: Mapped[int | None]`, `timestamp: Mapped[datetime]`. Table: `interaction_logs`. Index: `ix_interaction_logs_session_id`
+  - [ ] Create `app/models/credential_store.py` — `CredentialStore` model: `id: Mapped[UUID]` (pk), `org_id: Mapped[str]`, `provider: Mapped[str]`, `encrypted_key: Mapped[str]`. Table: `credential_store`. Unique constraint: `(org_id, provider)`
+  - [ ] Create `app/models/workflow_config.py` — `WorkflowConfig` model: `id: Mapped[UUID]` (pk), `version: Mapped[str]`, `config_json: Mapped[str]`, `loaded_at: Mapped[datetime]`. Table: `workflow_configs`
+  - [ ] Create `app/models/__init__.py` that imports all 4 models (Alembic must see them for autogenerate)
+  - [ ] ⚠️ DO NOT create `DeclinedOpportunity` — deferred to Story 4.3
+
+- [ ] **Task 5: Alembic setup** (AC: 1)
+  - [ ] Run `alembic init alembic` in `autom9-backend/`
+  - [ ] Rewrite `alembic/env.py` with the async `run_async_migrations()` pattern using `async_engine_from_config` with `poolclass=NullPool`
+  - [ ] Import `Base` and `app.models` (side-effect import) in `env.py` so all models are registered
+  - [ ] Set `target_metadata = Base.metadata`
+  - [ ] Generate initial migration: `alembic revision --autogenerate -m "initial_schema"`
+  - [ ] Verify migration creates all 4 tables with correct columns and indexes
+
+- [ ] **Task 6: Docker setup + fail-fast entrypoint** (AC: 1)
+  - [ ] Create `Dockerfile` — multi-stage uv-based build: `FROM python:3.11-slim`, install uv, `uv sync --frozen`, final stage copies `.venv`
+  - [ ] Create `docker/entrypoint.sh`:
+    ```sh
+    #!/bin/sh
+    set -e
+    alembic upgrade head
+    exec uvicorn app.main:app --host 0.0.0.0 --port 8000
+    ```
+    Make executable: `chmod +x docker/entrypoint.sh`
+  - [ ] Create `docker-compose.yml` with `db` service (postgres:16-alpine) + healthcheck (`pg_isready`) and `app` service with `depends_on: db: condition: service_healthy`
+  - [ ] `app` service `entrypoint: ["/app/docker/entrypoint.sh"]`
+  - [ ] Pass all required env vars to the `app` container via `environment:` block
+
+- [ ] **Task 7: FastAPI app + /health endpoint** (AC: 1)
+  - [ ] Create `app/main.py` — `FastAPI(title="autom9", lifespan=lifespan)` (use lifespan context manager, NOT deprecated `@app.on_event`)
+  - [ ] Register `GET /health` → `{"status": "ok"}` (no DB dependency — pure liveness check)
+  - [ ] Add `GET /api/health` as alias for future API-prefixed consumers
+  - [ ] DO NOT register any other routes — those belong to future stories
+
+- [ ] **Task 8: pytest configuration** (AC: 3)
+  - [ ] Create `pytest.ini`:
+    ```ini
+    [pytest]
+    asyncio_mode = auto
+    ```
+  - [ ] Create `tests/` directory mirroring `app/` structure
+  - [ ] Create `tests/conftest.py` with:
+    - Session-scoped async `engine` fixture using `NullPool` + `create_all`/`drop_all`
+    - Function-scoped `db_session` fixture using nested transaction (SAVEPOINT pattern) — outer `connection.begin()` + `connection.begin_nested()` → yield session → `connection.rollback()`
+    - Function-scoped `client` fixture using `httpx.AsyncClient` + `ASGITransport` + `app.dependency_overrides[get_db]`
+  - [ ] Write at least one smoke test: `test_health_returns_ok` — `GET /health` → 200, body matches `{"status": "ok"}`
+  - [ ] Write one settings test: `test_missing_env_var_exits` — verify `Settings()` raises `ValidationError` when a required field is absent
+
+- [ ] **Task 9: Frontend scaffold** (AC: 2)
+  - [ ] Run `npm create vite@latest autom9-extension -- --template svelte-ts`
+  - [ ] `cd autom9-extension && npm install`
+  - [ ] Run `npm install @tableau/extensions-api-types`
+  - [ ] Create `src/stores/` directory with empty `.gitkeep` (stores implemented in Story 1.2+)
+  - [ ] Create `src/lib/` directory with empty `.gitkeep`
+  - [ ] Verify `npm run dev` starts without errors and `npm run build` produces a `dist/`
+
+- [ ] **Task 10: Repository hygiene**
+  - [ ] Create root `.gitignore` covering: `.env`, `__pycache__/`, `.venv/`, `node_modules/`, `dist/`, `.DS_Store`
+  - [ ] Verify `.env` is NOT tracked by git
+
+## Dev Notes
+
+### Architecture Source
+All decisions in this story come from: `_bmad-output/planning-artifacts/architecture.md` — "Technology Stack & Starter Templates" and "Infrastructure & Deployment" sections.
+
+### Backend Stack (exact versions — verify current patch on PyPI before pinning)
+```
+fastapi >= 0.115.0          # Pydantic v2 default; use .model_dump() not .dict()
+uvicorn[standard] >= 0.29.0
+sqlalchemy[asyncio] >= 2.0.30
+asyncpg >= 0.29.0
+alembic >= 1.13.0
+pydantic-settings >= 2.0.0  # SEPARATE package from pydantic
+python-jose
+httpx >= 0.27.0             # required for test client ASGITransport
+cryptography
+python-json-logger
+pytest >= 8.0.0
+pytest-asyncio >= 0.23.0    # 0.23+ has stable asyncio_mode=auto
+```
+
+### Frontend Stack
+```
+Svelte 5.x + Vite 6.x + TypeScript
+@tableau/extensions-api-types (latest)
+```
+
+### Critical: Svelte 5 Store Pattern
+**Do NOT use `writable()` from `svelte/store`** — that is the Svelte 4 pattern.
+
+Use class-based `$state` in `.svelte.ts` files (note the extension):
+```ts
+// src/stores/chatStore.svelte.ts
+class ChatStore {
+  messages = $state<Message[]>([]);
+  status = $state<'idle' | 'loading' | 'complete' | 'error'>('idle');
+  addMessage(msg: Message) { this.messages = [...this.messages, msg]; }
+}
+export const chatStore = new ChatStore();
+```
+
+Files using runes outside `.svelte` components **must** be named `.svelte.ts`, not `.ts`. The Svelte compiler only activates runes in `.svelte` and `.svelte.ts` files.
+
+This story only creates the `src/stores/` directory — actual store implementations belong to Stories 1.2+ and 3.x.
+
+### Critical: SQLAlchemy 2.0 ORM API
+Use the new typed API — NOT legacy `Column()`:
+```python
+# ✅ Correct (SQLAlchemy 2.0)
+from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
+class Base(DeclarativeBase): ...
+class Session(Base):
+    session_id: Mapped[UUID] = mapped_column(primary_key=True, default=uuid4)
+
+# ❌ Wrong (legacy, do not use)
+from sqlalchemy.ext.declarative import declarative_base
+Base = declarative_base()
+class Session(Base):
+    session_id = Column(UUID, primary_key=True)
+```
+
+### Critical: pydantic-settings Import
+```python
+# ✅ Correct
+from pydantic_settings import BaseSettings, SettingsConfigDict
+
+# ❌ Wrong (pydantic v1 style — package split in v2)
+from pydantic import BaseSettings
+```
+
+### Critical: Alembic Async env.py
+Standard `alembic init` generates a sync `env.py`. It **must** be replaced with the async pattern:
+- Use `async_engine_from_config` (not `engine_from_config`)
+- Use `poolclass=NullPool` for migrations (never the production pool)
+- Use `asyncio.run(run_async_migrations())` in `run_migrations_online()`
+
+### Critical: Docker Fail-Fast
+`set -e` in `entrypoint.sh` is what makes migration failure stop the container. Without it, the script continues to `exec uvicorn` even if Alembic exits non-zero. Do not omit it.
+
+### Critical: Test Fixture Pattern (No State Leakage)
+```python
+# Function-scoped session using nested transactions — each test gets a clean slate
+@pytest_asyncio.fixture(scope="function")
+async def db_session(engine):
+    async with engine.connect() as connection:
+        await connection.begin()          # outer transaction
+        await connection.begin_nested()   # SAVEPOINT — test code commits here
+        session = async_sessionmaker(bind=connection, expire_on_commit=False)()
+        yield session
+        await session.close()
+        await connection.rollback()       # rolls back everything
+```
+Use `NullPool` on the test engine. Session-scoped `engine` fixture is fine — it is function-scoped `db_session` that prevents leakage.
+
+### DB Naming Conventions (from architecture.md)
+- Tables: `snake_case` plural — `sessions`, `interaction_logs`, `credential_store`, `workflow_configs`
+- Columns: `snake_case` — `session_id`, `tableau_user_id`, `created_at`
+- PKs: `id` (UUID, uuid4 default) — except `Session` which uses `session_id` as PK
+- Indexes: `ix_{table}_{column}` — e.g. `ix_interaction_logs_session_id`
+- MetaData naming convention must be set on `Base` for Alembic to generate deterministic constraint names
+
+### Scope Boundaries — What Belongs in Later Stories
+| Concern | Story |
+|---|---|
+| `.trex` manifest | 1.2 |
+| CORS middleware | 1.2 |
+| Tableau `initializeAsync` gate | 1.2 |
+| `StatusBar.svelte` component | 1.3 |
+| Integration health check logic | 1.3 |
+| `DeclinedOpportunity` model | 4.3 |
+| Any route other than `/health` | 2.x+ |
+| Svelte store implementations | 1.3 / 3.x |
+
+Do NOT implement any of the above in this story.
+
+### Project Structure Notes
+```
+autom9-backend/
+├── app/
+│   ├── api/            # Route handlers (empty init for now)
+│   ├── agent/          # Orchestration engine (empty init for now)
+│   ├── integrations/   # Tool integrations (empty init for now)
+│   ├── models/         # SQLAlchemy models ← implement here
+│   │   ├── __init__.py # imports all models — required for Alembic autogenerate
+│   │   ├── session.py
+│   │   ├── interaction_log.py
+│   │   ├── credential_store.py
+│   │   └── workflow_config.py
+│   ├── schemas/        # Pydantic request/response models (empty init for now)
+│   ├── config/         # WorkflowRegistry (empty init for now)
+│   ├── ops/            # Health checks (empty init for now)
+│   ├── core/
+│   │   └── config.py   # Settings ← implement here
+│   └── main.py         # FastAPI app entry point ← implement here
+├── app/db/
+│   ├── base.py         # DeclarativeBase ← implement here
+│   ├── engine.py       # async engine + session factory ← implement here
+│   └── deps.py         # get_db() dependency ← implement here
+├── alembic/
+│   └── env.py          # async migration runner ← rewrite after alembic init
+├── tests/
+│   ├── conftest.py     # engine, db_session, client fixtures ← implement here
+│   └── test_health.py  # smoke test ← implement here
+├── docker/
+│   └── entrypoint.sh   # set -e + alembic upgrade head + exec uvicorn ← implement
+├── docker-compose.yml  # db (postgres:16-alpine healthcheck) + app ← implement
+├── Dockerfile          # uv multi-stage build ← implement
+├── pytest.ini          # asyncio_mode = auto ← implement
+├── .env.example        # all required vars with placeholder values ← implement
+└── pyproject.toml      # generated by uv init, populated by uv add
+
+autom9-extension/       # generated by npm create vite@latest -- --template svelte-ts
+├── src/
+│   ├── stores/         # empty dir (.gitkeep) — stores implemented in later stories
+│   ├── lib/            # empty dir (.gitkeep)
+│   └── App.svelte      # scaffold default — do not modify yet
+└── package.json
+```
+
+### References
+- Architecture stack decisions: [Source: _bmad-output/planning-artifacts/architecture.md#Technology Stack & Starter Templates]
+- Docker deployment pattern: [Source: _bmad-output/planning-artifacts/architecture.md#Infrastructure & Deployment]
+- DB naming conventions: [Source: _bmad-output/planning-artifacts/architecture.md#Naming Patterns]
+- Data models spec: [Source: _bmad-output/planning-artifacts/architecture.md#Data Architecture]
+- Gap items ARC-6, ARC-7, ARC-8: [Source: _bmad-output/planning-artifacts/architecture.md#Gap Analysis Results]
+- ARC-11 (4 models, no DeclinedOpportunity): [Source: _bmad-output/planning-artifacts/epics.md#Epic 1]
+
+## Dev Agent Record
+
+### Agent Model Used
+
+_to be filled by dev agent_
+
+### Debug Log References
+
+### Completion Notes List
+
+### File List

@@ -1,0 +1,104 @@
+{
+  "version": 3,
+  "lastComputedDate": "2026-04-13",
+  "dailyActivity": [
+    {
+      "date": "2026-03-31",
+      "messageCount": 3,
+      "sessionCount": 1,
+      "toolCallCount": 0
+    },
+    {
+      "date": "2026-04-07",
+      "messageCount": 50,
+      "sessionCount": 1,
+      "toolCallCount": 17
+    },
+    {
+      "date": "2026-04-08",
+      "messageCount": 506,
+      "sessionCount": 2,
+      "toolCallCount": 300
+    },
+    {
+      "date": "2026-04-09",
+      "messageCount": 88,
+      "sessionCount": 1,
+      "toolCallCount": 26
+    },
+    {
+      "date": "2026-04-13",
+      "messageCount": 157,
+      "sessionCount": 6,
+      "toolCallCount": 22
+    }
+  ],
+  "dailyModelTokens": [
+    {
+      "date": "2026-04-07",
+      "tokensByModel": {
+        "claude-sonnet-4-6": 2272
+      }
+    },
+    {
+      "date": "2026-04-08",
+      "tokensByModel": {
+        "claude-sonnet-4-6": 149831,
+        "claude-haiku-4-5-20251001": 8829
+      }
+    },
+    {
+      "date": "2026-04-09",
+      "tokensByModel": {
+        "claude-sonnet-4-6": 16853
+      }
+    },
+    {
+      "date": "2026-04-13",
+      "tokensByModel": {
+        "claude-sonnet-4-6": 19545
+      }
+    }
+  ],
+  "modelUsage": {
+    "claude-sonnet-4-6": {
+      "inputTokens": 5531,
+      "outputTokens": 182970,
+      "cacheReadInputTokens": 40548849,
+      "cacheCreationInputTokens": 1183815,
+      "webSearchRequests": 0,
+      "costUSD": 0,
+      "contextWindow": 0,
+      "maxOutputTokens": 0
+    },
+    "claude-haiku-4-5-20251001": {
+      "inputTokens": 89,
+      "outputTokens": 8740,
+      "cacheReadInputTokens": 1753256,
+      "cacheCreationInputTokens": 137639,
+      "webSearchRequests": 0,
+      "costUSD": 0,
+      "contextWindow": 0,
+      "maxOutputTokens": 0
+    }
+  },
+  "totalSessions": 11,
+  "totalMessages": 804,
+  "longestSession": {
+    "sessionId": "5331c8d8-9ed3-4cf8-8cb6-be1045a3c47c",
+    "duration": 8050021,
+    "messageCount": 418,
+    "timestamp": "2026-04-08T12:51:46.763Z"
+  },
+  "firstSessionDate": "2026-03-31T08:44:19.075Z",
+  "hourCounts": {
+    "8": 1,
+    "10": 2,
+    "11": 4,
+    "12": 1,
+    "13": 1,
+    "14": 1,
+    "17": 1
+  },
+  "totalSpeculationTimeSavedMs": 0
+}

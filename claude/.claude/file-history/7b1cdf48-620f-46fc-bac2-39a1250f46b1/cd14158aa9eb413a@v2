@@ -1,0 +1,27 @@
+import pytest
+
+pytestmark = pytest.mark.asyncio(loop_scope="session")
+
+from app.integrations.base import IntegrationBase, IntegrationStatus
+from app.integrations.smartsheet import SmartsheetIntegration
+from app.integrations.google_calendar import GoogleCalendarIntegration
+from app.integrations.google_docs import GoogleDocsIntegration
+from app.integrations.tableau_data import TableauDataIntegration
+from app.core.exceptions import IntegrationError
+
+
+async def test_all_stubs_return_unavailable_status():
+    for cls in [SmartsheetIntegration, GoogleCalendarIntegration, GoogleDocsIntegration, TableauDataIntegration]:
+        integration = cls()
+        result = await integration.health_check()
+        assert isinstance(result, IntegrationStatus)
+        assert result.status == "unavailable"
+        assert result.error is not None
+
+
+async def test_all_stubs_execute_raises_integration_error():
+    for cls in [SmartsheetIntegration, GoogleCalendarIntegration, GoogleDocsIntegration, TableauDataIntegration]:
+        integration = cls()
+        with pytest.raises(IntegrationError) as exc_info:
+            await integration.execute("action", {})
+        assert exc_info.value.integration == integration.name

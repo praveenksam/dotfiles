@@ -1,0 +1,128 @@
+import asyncio
+import logging
+import time
+import uuid
+from typing import Annotated
+
+from fastapi import APIRouter, Depends, Header, HTTPException
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from app.agent.provider_factory import get_provider
+from app.api.deps import require_admin
+from app.core.exceptions import ProviderError
+from app.db.deps import get_db
+from app.integrations import ALL_INTEGRATIONS
+from app.schemas.status import IntegrationStatusItem, IntegrationTestResponse, Meta
+
+logger = logging.getLogger(__name__)
+router = APIRouter(prefix="/api/integrations", tags=["integrations"])
+
+_INTEGRATION_MAP = {i.name: i for i in ALL_INTEGRATIONS}
+# Valid names: "smartsheet", "google_calendar", "google_docs", "tableau_data", "llm"
+_VALID_NAMES = set(_INTEGRATION_MAP.keys()) | {"llm"}
+
+# Admin test has more time than load health check (5s) — admin is deliberately waiting
+_TEST_TIMEOUT_S = 10.0
+
+
+@router.post(
+    "/{name}/test",
+    response_model=IntegrationTestResponse,
+    dependencies=[Depends(require_admin)],
+)
+async def test_integration(
+    name: str,
+    db: AsyncSession = Depends(get_db),
+    x_autom9_session: Annotated[str | None, Header()] = None,
+) -> IntegrationTestResponse:
+    """
+    Admin-only on-demand connectivity test for a named integration.
+    Returns a single IntegrationStatusItem — never raises on integration failure (NFR9).
+    Valid names: smartsheet, google_calendar, google_docs, tableau_data, llm.
+    """
+    if name not in _VALID_NAMES:
+        raise HTTPException(status_code=404, detail=f"Unknown integration '{name}'")
+
+    session_id = x_autom9_session or "unknown"
+
+    if name == "llm":
+        result = await _test_llm(db)
+    else:
+        result = await _test_integration(name)
+
+    logger.info(
+        "integration_connection_test",
+        extra={
+            "session_id": session_id,
+            "integration": result.name,
+            "status": result.status,
+            "latency_ms": result.latency_ms,
+            # NOTE: no credentials, no user PII logged here (FR19)
+        },
+    )
+
+    return IntegrationTestResponse(
+        data=result,
+        meta=Meta(request_id=str(uuid.uuid4())),
+    )
+
+
+async def _test_integration(name: str) -> IntegrationStatusItem:
+    """Calls health_check() for a named IntegrationBase implementation."""
+    integration = _INTEGRATION_MAP[name]
+    start = time.monotonic()
+    try:
+        status = await asyncio.wait_for(
+            integration.health_check(), timeout=_TEST_TIMEOUT_S
+        )
+    except asyncio.TimeoutError:
+        return IntegrationStatusItem(
+            name=name,
+            status="unavailable",
+            latency_ms=int(_TEST_TIMEOUT_S * 1000),
+            error="connection test timed out",
+        )
+    latency_ms = int((time.monotonic() - start) * 1000)
+    return IntegrationStatusItem(
+        name=status.name,
+        status=status.status,
+        latency_ms=latency_ms,
+        error=status.error,
+    )
+
+
+async def _test_llm(db: AsyncSession) -> IntegrationStatusItem:
+    """
+    Tests LLM provider connectivity.
+    Resolves active provider from DB via get_provider(), then makes a minimal completion call.
+    Returns unavailable if no credentials configured or if the API call fails.
+    """
+    start = time.monotonic()
+    try:
+        provider = await get_provider(db)
+        await asyncio.wait_for(
+            provider.complete([{"role": "user", "content": "ping"}], []),
+            timeout=_TEST_TIMEOUT_S,
+        )
+        latency_ms = int((time.monotonic() - start) * 1000)
+        return IntegrationStatusItem(
+            name="llm",
+            status="healthy",
+            latency_ms=latency_ms,
+            error=None,
+        )
+    except ProviderError as exc:
+        latency_ms = int((time.monotonic() - start) * 1000)
+        return IntegrationStatusItem(
+            name="llm",
+            status="unavailable",
+            latency_ms=latency_ms,
+            error=str(exc),
+        )
+    except asyncio.TimeoutError:
+        return IntegrationStatusItem(
+            name="llm",
+            status="unavailable",
+            latency_ms=int(_TEST_TIMEOUT_S * 1000),
+            error="LLM connection test timed out",
+        )

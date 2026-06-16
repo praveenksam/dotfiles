@@ -1,0 +1,143 @@
+<script lang="ts">
+  import { onMount } from 'svelte';
+  import { apiFetch } from '../lib/api';
+  import { sessionStore } from '../stores/session.svelte';
+
+  type LoadState = 'idle' | 'loading' | 'done' | 'error';
+
+  type OpportunityItem = Record<string, string>;
+
+  let state = $state<LoadState>('idle');
+  let opportunities = $state<OpportunityItem[]>([]);
+  let errorMessage = $state<string | null>(null);
+
+  const sessionHeaders = (): Record<string, string> =>
+    sessionStore.sessionId ? { 'X-Autom9-Session': sessionStore.sessionId } : {};
+
+  function badgeLabel(type: string): string {
+    return type === 'billable' ? 'Billable' : 'Internal';
+  }
+
+  function fieldEntries(opp: OpportunityItem): [string, string][] {
+    return Object.entries(opp).filter(([key, value]) => key !== 'type' && Boolean(value));
+  }
+
+  async function loadOpenWork(): Promise<void> {
+    state = 'loading';
+    try {
+      const response = await apiFetch<{ data: OpportunityItem[] }>('/api/data/open-work', {
+        headers: sessionHeaders(),
+      });
+      opportunities = response.data;
+      state = 'done';
+    } catch {
+      errorMessage = 'Could not load open work opportunities';
+      state = 'error';
+    }
+  }
+
+  onMount(() => {
+    loadOpenWork();
+  });
+</script>
+
+<div class="open-work-panel">
+  <section class="panel-section">
+    <h3>Open Work Opportunities</h3>
+    {#if state === 'loading'}
+      <p class="loading">Loading…</p>
+    {:else if state === 'error'}
+      <p class="error">{errorMessage}</p>
+    {:else if opportunities.length === 0}
+      <p class="empty">No open work opportunities available</p>
+    {:else}
+      <ul>
+        {#each opportunities as opp}
+          <li class="opportunity">
+            {#if opp.type}
+              <span class="badge badge-{opp.type}">{badgeLabel(opp.type)}</span>
+            {/if}
+            <div class="opportunity-fields">
+              {#each fieldEntries(opp) as [key, value] (key)}
+                <span class="field field-{key}">{value}</span>
+              {/each}
+            </div>
+          </li>
+        {/each}
+      </ul>
+    {/if}
+  </section>
+</div>
+
+<style>
+  .open-work-panel {
+    font-family: sans-serif;
+    padding: 0.75rem;
+  }
+  .panel-section {
+    margin-bottom: 1.25rem;
+  }
+  h3 {
+    font-size: 0.875rem;
+    font-weight: 600;
+    margin: 0 0 0.5rem;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    color: #444;
+  }
+  .loading { color: #666; font-style: italic; }
+  .error { color: #c00; }
+  .empty { color: #888; }
+  ul {
+    margin: 0;
+    padding: 0;
+    list-style: none;
+  }
+  .opportunity {
+    display: flex;
+    align-items: flex-start;
+    gap: 0.5rem;
+    padding: 0.4rem 0;
+    font-size: 0.875rem;
+    border-bottom: 1px solid #f0f0f0;
+  }
+  .opportunity:last-child {
+    border-bottom: none;
+  }
+  .badge {
+    flex-shrink: 0;
+    font-size: 0.7rem;
+    font-weight: 600;
+    padding: 0.1rem 0.4rem;
+    border-radius: 3px;
+    white-space: nowrap;
+    text-transform: uppercase;
+    letter-spacing: 0.03em;
+    margin-top: 0.1rem;
+  }
+  .badge-billable {
+    background: #e6f4ea;
+    color: #137333;
+  }
+  .badge-internal {
+    background: #e8eaf6;
+    color: #3949ab;
+  }
+  .opportunity-fields {
+    display: flex;
+    flex-direction: column;
+    gap: 0.15rem;
+    min-width: 0;
+  }
+  .field {
+    color: #222;
+  }
+  .field-title {
+    font-weight: 500;
+  }
+  .field-details {
+    color: #555;
+    font-size: 0.8rem;
+    white-space: pre-wrap;
+  }
+</style>

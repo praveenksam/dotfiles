@@ -1,0 +1,88 @@
+---
+stepsCompleted: ['step-01-validate-prerequisites']
+inputDocuments: ['_bmad-output/planning-artifacts/prd.md', '_bmad-output/planning-artifacts/architecture.md']
+---
+
+# autom9 - Epic Breakdown
+
+## Overview
+
+This document provides the complete epic and story breakdown for autom9, decomposing the requirements from the PRD and Architecture into implementable stories.
+
+## Requirements Inventory
+
+### Functional Requirements
+
+FR1: Consultant can view their open days and scheduled engagements sourced from Snowflake via the Tableau data source within the extension panel
+FR2: Consultant can view their task list ingested from their designated individual Google Doc
+FR3: Consultant can interact with the AI agent via a chat interface embedded in the Tableau extension panel
+FR4: Agent can ask clarifying questions about task timing, priority, and scheduling preferences before taking action
+FR5: Agent retains context within a session to support multi-turn clarifying conversations
+FR6: Consultant can review the agent's proposed actions before execution is confirmed
+FR7: Agent surfaces open work opportunities from the org-wide Google Doc, distinguishing billable client work from internal projects
+FR8: Agent prioritises billable opportunities above internal project opportunities
+FR9: Agent calculates whether a consultant's available capacity meets the time commitment of an open work opportunity, including a 5% buffer
+FR10: Consultant can accept or decline an open work opportunity from within the extension panel
+FR11: Agent notifies the relevant coordinator when a consultant accepts an open work opportunity
+FR12: Agent does not resurface a previously declined opportunity to the same consultant
+FR13: Agent submits a Smartsheet planning request on behalf of the consultant
+FR14: Agent creates Google Calendar invites for the consultant around existing engagements
+FR15: Extension checks connectivity to all configured integrations on load and surfaces any unavailable services before interaction begins
+FR16: Agent fails gracefully with a specific error message if an integration becomes unavailable during a workflow, without partially executing dependent actions
+FR17: Agent masks identifiable data fields (names, client identifiers, engagement IDs) with opaque tokens before transmitting any context to the LLM provider
+FR18: Agent rehydrates masked tokens with real values from the session token map before displaying output or executing tool actions
+FR19: Integration credentials are never exposed in logs, the chat interface, or configuration files visible to consultants
+FR20: Admin can install and register the extension in Tableau Desktop and Tableau Cloud/Server
+FR21: Admin can configure the BYOM LLM provider and API credentials at the org level via the extension configuration panel
+FR22: Admin can load and update the JSON workflow configuration file defining agent capabilities, tool access, and workflow parameters
+FR23: Admin can test integration connections from the configuration panel before activating the extension for consultants
+FR24: Admin can access agent interaction logs with sufficient detail to diagnose failed tool calls, error patterns, and latency
+FR25: Integration status check results are logged for admin review
+FR26: New agent workflows can be added by updating the JSON workflow configuration file without modifying platform code
+FR27: The JSON workflow configuration defines available tools, agent instructions, and workflow parameters in a versionable format
+FR28: The extension supports OpenAI and Anthropic as BYOM LLM providers, switchable via configuration change
+FR29: The extension is compatible with Tableau Desktop and Tableau Cloud/Server
+
+### NonFunctional Requirements
+
+NFR1: Agent responses complete within 20 seconds (p95) under normal operating conditions during the POC phase (nice-to-have; no hard SLA in v1)
+NFR2: The extension panel renders and integration status check completes within 5 seconds of Tableau dashboard load
+NFR3: The chat interface displays a visible processing indicator within 1 second of the consultant submitting a message
+NFR4: All data transmitted between the extension and external services is encrypted in transit (TLS 1.2+)
+NFR5: API credentials and integration tokens are stored encrypted at rest and never surfaced in logs, UI elements, or configuration files accessible to consultants
+NFR6: The token masking system transmits no real consultant names, client identifiers, or engagement IDs to any external LLM provider under any circumstances
+NFR7: Agent interaction logs capture only masked data representations — no raw LLM payloads containing identifiable fields
+NFR8: The extension identifies and reports unavailability of any configured integration within the 5-second load status check window
+NFR9: A failure in one integration does not cascade to prevent other integrations from functioning
+NFR10: The JSON workflow configuration system handles version mismatches gracefully — a config update does not break or corrupt an in-flight session
+NFR11: The extension supports concurrent usage by all 80 POC consultants without degradation in agent response time
+NFR12: The platform architecture imposes no design constraints that would prevent future multi-tenant isolation
+
+### Additional Requirements
+
+- **[ARC-1] Project Scaffolding (Day-Zero):** Backend scaffold: `uv init autom9-backend` with fastapi, uvicorn, sqlalchemy[asyncio], asyncpg, alembic, pydantic-settings, python-jose, httpx, cryptography, python-json-logger. Frontend scaffold: `npm create vite@latest autom9-extension -- --template svelte-ts` with @tableau/extensions-api-types.
+- **[ARC-2] .trex Manifest:** Create `autom9.trex` at extension project root with required fields: name, description, source-location (backend URL), min-version, permissions (read worksheets). Without this the extension cannot load for any testing.
+- **[ARC-3] CORS Configuration:** Configure FastAPI `CORSMiddleware` in `main.py` with allowed Tableau origins (public.tableau.com and Tableau Server domain).
+- **[ARC-4] JSON Workflow Config Schema:** Document schema in `app/config/workflow_schema.py` — minimum fields: version (semver), tools (array with name, description, parameters), agent_instructions (string), workflow_id (string).
+- **[ARC-5] Tableau initializeAsync Gate:** `tableau.extensions.initializeAsync()` must complete before any store setup or backend calls in `App.svelte`.
+- **[ARC-6] Alembic Fail-Fast:** Container must fail to start if migration fails. Enforced via Docker entrypoint exit code check.
+- **[ARC-7] Async Test Setup:** `pytest.ini` must specify `asyncio_mode = auto`. Async SQLAlchemy fixtures must be function-scoped to prevent state leakage.
+- **[ARC-8] Connection Pool Sizing:** `DATABASE_POOL_MIN` and `DATABASE_POOL_MAX` as environment variables (recommended: min=5, max=20) via pydantic-settings.
+- **[ARC-9] masking.py Quality Gate:** `app/agent/masking.py` requires 100% branch coverage as a hard acceptance criterion for any story touching the agent pipeline.
+- **[ARC-10] LLM Retry/Backoff Strategy:** `LLMProvider.complete()` must apply exponential backoff with jitter, 3 retries max, then raise `ProviderError` on 429 or transient errors.
+- **[ARC-11] Data Models:** Four core models required: `DeclinedOpportunity` (consultant_id, opportunity_id, declined_at), `InteractionLog` (session_id, masked_input, masked_output, tool_calls, latency_ms, timestamp), `CredentialStore` (org_id, provider, encrypted_key), `WorkflowConfig` (version, config_json, loaded_at), `Session` (session_id UUID PK, tableau_user_id, started_at).
+- **[ARC-12] BYOM Provider Interface:** `LLMProvider` class with `complete()` and `stream()` — stream() raises `NotImplementedError` in v1.
+- **[ARC-13] Integration Interface:** All integrations in `app/integrations/` implement `IntegrationBase` with `health_check()` and `execute()`. Failure raises `IntegrationError` caught at `app/api/` level.
+- **[ARC-14] Session Registry:** `GET /api/admin/sessions/{session_id}` endpoint for admin triage. All `InteractionLog` entries reference session_id. PII stays out of logs.
+
+### UX Design Requirements
+
+No UX design document present for this project.
+
+### FR Coverage Map
+
+{{requirements_coverage_map}}
+
+## Epic List
+
+{{epics_list}}

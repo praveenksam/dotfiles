@@ -1,0 +1,80 @@
+import logging
+from contextlib import asynccontextmanager
+from typing import AsyncGenerator
+
+from fastapi import FastAPI, HTTPException, Request
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
+from pythonjsonlogger.json import JsonFormatter
+
+from app.api import integrations as integrations_router
+from app.api import sessions as sessions_router
+from app.api import status as status_router
+from app.api.admin.config import router as admin_config_router
+from app.api.admin.credentials import router as admin_credentials_router
+from app.api.config import router as workflow_config_router
+from app.config.workflow_registry import workflow_registry
+from app.core.config import settings
+from app.core.exceptions import IntegrationError
+from app.db.engine import AsyncSessionFactory
+
+
+def _configure_logging() -> None:
+    handler = logging.StreamHandler()
+    handler.setFormatter(JsonFormatter())
+    root = logging.getLogger()
+    root.setLevel(settings.LOG_LEVEL)
+    root.addHandler(handler)
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
+    _configure_logging()
+    async with AsyncSessionFactory() as db:
+        await workflow_registry.load_from_db(db)
+    yield
+
+
+app = FastAPI(title="autom9", lifespan=lifespan)
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=[o.strip() for o in settings.CORS_ORIGINS.split(",") if o.strip()],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+app.include_router(sessions_router.router)
+app.include_router(status_router.router)
+app.include_router(integrations_router.router)
+app.include_router(admin_credentials_router)
+app.include_router(admin_config_router)
+app.include_router(workflow_config_router)
+
+
+@app.exception_handler(HTTPException)
+async def http_exception_handler(request: Request, exc: HTTPException) -> JSONResponse:
+    message = exc.detail if isinstance(exc.detail, str) else str(exc.detail)
+    return JSONResponse(
+        status_code=exc.status_code,
+        content={"error": {"code": str(exc.status_code), "message": message}},
+    )
+
+
+@app.exception_handler(IntegrationError)
+async def integration_error_handler(request: Request, exc: IntegrationError) -> JSONResponse:
+    return JSONResponse(
+        status_code=503,
+        content={"error": {"code": "INTEGRATION_ERROR", "message": str(exc), "integration": exc.integration}},
+    )
+
+
+@app.get("/health")
+async def health() -> dict:
+    return {"status": "ok"}
+
+
+@app.get("/api/health")
+async def api_health() -> dict:
+    return {"status": "ok"}

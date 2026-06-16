@@ -1,0 +1,187 @@
+---
+stepsCompleted: [1, 2, 3-partial]
+session_topic: '12-Day Tableau Next POC Project Plan — Customer Support Remote Support Dashboard'
+session_goals: 'Build a project plan with clear RACI, timelines, client vs consultant responsibilities, and delay triggers'
+selected_approach: 'progressive-flow'
+techniques_used: ['What If Scenarios', 'Constraint Mapping (pending)', 'Six Thinking Hats (pending)', 'Decision Tree Mapping (pending)']
+ideas_generated: 24
+context_file: ''
+---
+
+## Session Overview
+
+**Topic:** 12-Day Tableau Next POC for a Salesforce-using client — Customer Support / Remote Support overview dashboard
+**Goals:**
+1. Build a project plan with realistic scope for 12 days
+2. Define clear RACI — what the client owns vs. what consultants own
+3. Establish timeline with hard checkpoints — when client deliverables are due and what gets delayed if they slip
+4. Set expectations that protect the engagement while keeping the client accountable
+
+### Session Setup
+
+**Approach:** Progressive Technique Flow
+- Phase 1: What If Scenarios (Expansive Exploration)
+- Phase 2: Constraint Mapping (Pattern Recognition)
+- Phase 3: Six Thinking Hats (Idea Development)
+- Phase 4: Decision Tree Mapping (Action Planning)
+
+---
+
+## Technique Execution Results
+
+### Phase 1: What If Scenarios — Expansive Exploration
+
+---
+
+#### RISKS
+
+**[Risk #1]: Dead on Arrival**
+_Concept:_ If the client has no Salesforce data accessible on Day 1, the POC cannot begin. Data connectivity is the single most upstream dependency — everything else is built on top of it. A missing connection on Day 1 doesn't just delay Day 1, it cascades into every subsequent day.
+_Novelty:_ This isn't just a risk item — it's a hard stop condition that needs to be contractually pre-agreed, not discovered mid-engagement.
+
+**[Risk #2]: The Late Sample Problem**
+_Concept:_ The client will provide sample data (not production), but it must contain realistic, varied customer support journeys across different client types. If it arrives late, the consultants can't easily reallocate their blocked time to other billable work — meaning late data = dead consultant time = financial loss.
+_Novelty:_ This makes "data readiness" not just a technical dependency but a commercial obligation for the client. It needs a hard deadline with a stated consequence, not a soft request.
+
+**[Risk #3]: Sample Data Quality Gate**
+_Concept:_ Even if data arrives on time, if it lacks diversity — only one type of customer support journey, missing fields, or unrealistic volumes — the dashboard will look shallow and fail to showcase Tableau Next's strengths.
+_Novelty:_ The plan needs a data acceptance criteria checklist the client signs off on before the engagement starts, not after data arrives.
+
+**[Risk #4]: The Chicken-and-Egg Dependency**
+_Concept:_ The client can't prepare the right sample data until consultants provide a data fields specification. Consultants have a Day 0 deliverable that unlocks the client's ability to meet their own deadline. If the spec is late, the client's deadline automatically shifts — and the 5-day buffer erodes immediately.
+_Novelty:_ Most project plans only track client dependencies. This surfaces a consultant-triggered dependency that must happen first — making it a shared accountability chain.
+
+**[Risk #5]: The 5-Day Cliff**
+_Concept:_ Binary consequence threshold — data received 5+ days before Day 1 = reschedulable. Less than 5 days = consultants absorb the lost time financially. This cliff needs to be communicated in writing upfront as a stated commercial term.
+_Novelty:_ Frame it not as a penalty but as a scheduling protection clause: "to protect your investment and ours, data must be received by [date]."
+
+**[Risk #6]: The Fake Diversity Problem**
+_Concept:_ 10 customer requests that are homogeneous (same type, same client segment, same resolution path) produce a dashboard that looks like a single use case. The POC fails to demonstrate Tableau Next's ability to surface patterns across varied support scenarios.
+_Novelty:_ The data requirement isn't just "10 records" — it needs to be 10 meaningfully different requests spanning client types, issue categories, resolution paths, and timelines.
+
+**[Risk #7]: The "Is This Real?" Moment**
+_Concept:_ If the demo shows a button that escalates a request but it doesn't actually write back to Salesforce in the live environment, a technical stakeholder will ask "is this real or a prototype?" — undermining the POC.
+_Novelty:_ The action capability must be wired to real Salesforce objects in the sample environment — not simulated. This is a technical requirement, not a nice-to-have.
+
+**[Risk #8]: The Telephone Problem**
+_Concept:_ Each handoff in the approval chain — Marketing Lead → CEO → Board — risks losing nuance, misrepresenting capability, or underselling the intervention layer. By the time it reaches the Board, the story may be unrecognisable.
+_Novelty:_ Build a leave-behind (one-pager or recorded walkthrough) that the Marketing Lead can use verbatim rather than paraphrasing.
+
+**[Risk #9]: The Compression Trap**
+_Concept:_ Phases 1–3 are dependencies the client partially controls. If they slip, the time lost comes out of Phases 4 and 5 — the most visible and valuable parts of the build. The client never sees the lost time in the foundation; they only see a rushed or incomplete dashboard.
+_Novelty:_ The project plan needs an explicit delay consequence table — if Phase 1 takes 2 days instead of 1, here's exactly what gets reduced or removed downstream.
+
+**[Risk #10]: Zero Buffer Architecture**
+_Concept:_ 12 days mapped to 12 days of work means any delay has nowhere to go. Phase 5 (Actions) is the first to get cut because it's last, even though it's the POC's strongest differentiator.
+_Novelty:_ The plan needs an explicit delay consequence table making the trade-off visible to the client before it happens.
+
+**[Risk #11]: Mockup Drift**
+_Concept:_ If the mockup review happens during Phase 4 rather than before it, client feedback triggers rework mid-build — compressing time available and potentially destabilising Phase 5's foundation.
+_Novelty:_ The review must happen before Day 5, ideally during Day 1 while data foundation is being built.
+
+**[Risk #12]: The Admin Bottleneck**
+_Concept:_ The Salesforce Admin controls sandbox provisioning but has no stake in the POC succeeding and likely has other priorities. If they find out about the request on Day 1, provisioning may take 2–3 days regardless of urgency.
+_Novelty:_ The project plan should include a pre-engagement client action — Admin briefed and sandbox prep started — before Day 1 of the build begins.
+
+---
+
+#### DELIVERABLES
+
+**[Deliverable #1]: Data Fields Specification**
+_Concept:_ Consultants produce a spec document listing all required Salesforce fields, journey attributes, and data volume requirements. This is the first thing sent to the client — before any development work begins.
+_Novelty:_ Turns a vague "give us data" ask into a formal, reviewable handoff with a clear acceptance standard.
+
+**[Deliverable #2]: Sample Data Acceptance Criteria**
+_Concept:_ A checklist the client must satisfy before data is accepted — minimum X distinct customer types, Y distinct issue categories, Z distinct resolution outcomes, at least one escalated case, at least one remote-specific support case.
+_Novelty:_ Turns subjective "good data" into an objective gate — protects both parties from a "we gave you data" vs. "it wasn't usable" dispute.
+
+**[Deliverable #3]: Salesforce Environment Specification**
+_Concept:_ A spec listing exactly which Salesforce actions need to be enabled (escalation, redirect, priority flag) and what sandbox permissions are required. Client must have this configured before Day 1.
+_Novelty:_ Separates environment readiness from data readiness — two distinct client dependencies that can fail independently.
+
+**[Deliverable #4]: Demo-Ready Handoff Package**
+_Concept:_ Final output includes the live POC, a walkthrough guide, and a short recorded demo the Marketing Lead can share up the chain without consultants present.
+_Novelty:_ Protects the POC from being misrepresented and gives the Marketing Lead confidence to champion it independently.
+
+**[Deliverable #5]: Mockup Review & Sign-Off**
+_Concept:_ Before Phase 4 begins, the Marketing Lead and ideally one Service Lead must review and approve the mockup. Layout changes, metric additions, or flow adjustments resolved here — not during the build.
+_Novelty:_ Creates a formal checkpoint that protects Phase 4 from mid-build scope changes.
+
+**[Deliverable #6]: Pre-Engagement Checklist for Client**
+_Concept:_ A formal list of things the client must complete before Day 1: Salesforce Admin briefed, sandbox prep initiated, sample data preparation underway, mockup review scheduled for Day 1.
+_Novelty:_ Moves client accountability out of the project timeline into a pre-project phase — protecting the 12-day clock from setup tasks the client controls.
+
+---
+
+#### FEATURES
+
+**[Feature #1]: The Journey Map View**
+_Concept:_ A visualisation showing customer support requests moving through stages — initial request, triage, remote support, resolution or escalation — so service leads see the full pipeline at a glance, not just individual tickets.
+_Novelty:_ Not a ticket list or count metric — a process flow with status that makes bottlenecks and stuck requests immediately visible.
+
+**[Feature #2]: The Intervention Layer**
+_Concept:_ Service leads can act within the view — escalate a stalled request, redirect it to a different agent or channel, or flag it for priority handling. Makes the dashboard operational, not just observational.
+_Novelty:_ This is what separates Tableau Next from a traditional BI report — action from within the dashboard, wired to real Salesforce objects.
+
+---
+
+#### VALUE PROPOSITIONS
+
+**[Value Prop #1]: The "Glass + Controls" Pitch**
+_Concept:_ Tableau Next is a visualisation and action layer inside Salesforce. Service leads don't leave their platform to see insights — they see insights and act on them without switching tools. The POC must demonstrate this live.
+_Novelty:_ Most clients think of dashboards as "look but don't touch." Showing a service lead escalate a ticket from a Tableau Next view and seeing it move in Salesforce in real time is the moment that changes the conversation.
+
+---
+
+#### STAKEHOLDERS
+
+**[Stakeholder #1]: Marketing Team Lead — The Internal Champion**
+_Concept:_ Primary audience for the POC. Must be convinced enough to carry the demo to the CEO. Needs to understand both the visual impact AND be able to retell the value narrative without consultants present.
+_Novelty:_ Not just building a demo for them — building them a narrative they can retell.
+
+**[Stakeholder #2]: Service Leads — The Validators**
+_Concept:_ The people who will actually use the tool daily. Their feedback carries credibility with the CEO. They need to feel the intervention and escalation features are practical, not just impressive.
+_Novelty:_ They'll ask "can it do X we do every day?" — the POC must answer that question directly.
+
+**[Stakeholder #3]: CEO — The Go/No-Go Gate**
+_Concept:_ Won't sit through a full dashboard walkthrough. Needs a 2-minute story: here's the problem, here's what this shows us, here's what we can now do, here's what it costs to implement.
+_Novelty:_ The POC needs a CEO-ready summary view — separate from the full dashboard — that distils the value into a single screen.
+
+**[Stakeholder #4]: The Board — The Funding Decision**
+_Concept:_ Never sees the tool. Sees a business case built on the POC outcome. The POC needs to generate evidence — not just impressiveness — translatable into ROI, risk reduction, or strategic positioning language.
+_Novelty:_ The POC deliverable isn't just the dashboard — it's the story that travels up the chain without consultants.
+
+**[Stakeholder #5]: Salesforce Admin — The Silent Gatekeeper**
+_Concept:_ Controls sandbox provisioning, permissions, and data export. Has no stake in the POC succeeding but has full control over whether it can start. Likely has other priorities and no visibility into the 5-day cliff consequence.
+_Novelty:_ Must be briefed before Day 1 — not on Day 1. Needs someone with authority over them to have made the request in advance.
+
+---
+
+#### CONFIRMED ASSUMPTIONS
+
+**[Confirmed #1]: Salesforce Sandbox Available**
+_Concept:_ Client has a sandbox that mirrors production. The intervention layer can be wired to real Salesforce objects without touching live data or requiring lengthy environment setup.
+_Novelty:_ Document as a confirmed assumption — if it changes, timeline impact is immediately visible.
+
+---
+
+#### TIMELINE
+
+**[Timeline #1]: Ideal 12-Day Build Plan**
+
+| Day | Track | Activity |
+|-----|-------|----------|
+| 1 | Client | Provide sandbox access + consultant tests connectivity |
+| 1 | Consultant | Mockup review session + client sign-off on design |
+| 2–3 | Consultant | Data 360 setup |
+| 4 | Consultant | Semantic layer build |
+| 5–8 | Consultant | Dashboard build (against signed-off mockup) |
+| 9–12 | Consultant | Actions layer |
+
+**[Scope Boundary #1]: 12 Days = Build Only**
+_Concept:_ The 12-day engagement ends at a demo-ready POC delivered to the Marketing Lead. Everything from the Service Lead review onwards is outside scope and timeline. Must be stated explicitly to prevent expectation creep.
+_Novelty:_ Without this stated, clients naturally assume consultants are available "just for a few tweaks" after the build.
+
+**[Timeline Update #1]: Day 1 Dual-Track**
+_Concept:_ Day 1 runs two parallel tracks — client provides and tests sandbox access while consultants run a mockup review session. By end of Day 1, both environment and design are confirmed.
+_Novelty:_ Turns a potentially wasted waiting day into a full alignment day. If sandbox access is delayed past Day 1, the mockup review still completed — only the technical track slips.

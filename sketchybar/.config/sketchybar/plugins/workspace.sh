@@ -4,7 +4,7 @@ source "$CONFIG_DIR/icons.sh"
 
 FOCUSED=$FOCUSED_WORKSPACE
 
-for sid in 1 2 3 4 5 6 B P S; do
+for sid in 1 2 3 4 5 6 7 8 B P S; do
   # Get apps in this workspace
   apps=$(aerospace list-windows --workspace "$sid" 2>/dev/null | awk -F '|' '{gsub(/^ +| +$/, "", $2); print $2}')
 

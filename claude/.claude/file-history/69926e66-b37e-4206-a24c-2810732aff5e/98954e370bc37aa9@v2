@@ -1,0 +1,62 @@
+import uuid
+
+from fastapi import APIRouter, Depends, HTTPException
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from app.api.deps import require_admin
+from app.db.deps import get_db
+from app.models.credential_store import CredentialStore
+from app.schemas.credentials import CredentialGetResponse, CredentialUpsertRequest, CredentialUpsertResponse
+from app.schemas.status import Meta
+from app.services.encryption import encrypt
+
+router = APIRouter(prefix="/api/admin/credentials", tags=["admin"])
+
+_ORG_ID = "default"
+_MASKED = "••••••••"
+
+
+@router.post("", status_code=200, response_model=CredentialUpsertResponse, dependencies=[Depends(require_admin)])
+async def upsert_credential(
+    body: CredentialUpsertRequest,
+    db: AsyncSession = Depends(get_db),
+) -> CredentialUpsertResponse:
+    result = await db.execute(
+        select(CredentialStore).where(
+            CredentialStore.org_id == _ORG_ID,
+            CredentialStore.provider == body.provider,
+        )
+    )
+    row = result.scalar_one_or_none()
+    encrypted = encrypt(body.api_key)
+    if row is None:
+        row = CredentialStore(org_id=_ORG_ID, provider=body.provider, encrypted_key=encrypted)
+        db.add(row)
+    else:
+        row.encrypted_key = encrypted
+    await db.commit()
+    return CredentialUpsertResponse(
+        data={"provider": body.provider, "masked_key": _MASKED},
+        meta=Meta(request_id=str(uuid.uuid4())),
+    )
+
+
+@router.get("/{provider}", status_code=200, response_model=CredentialGetResponse, dependencies=[Depends(require_admin)])
+async def get_credential(
+    provider: str,
+    db: AsyncSession = Depends(get_db),
+) -> CredentialGetResponse:
+    result = await db.execute(
+        select(CredentialStore).where(
+            CredentialStore.org_id == _ORG_ID,
+            CredentialStore.provider == provider,
+        )
+    )
+    row = result.scalar_one_or_none()
+    if row is None:
+        raise HTTPException(status_code=404, detail=f"No credentials for provider '{provider}'")
+    return CredentialGetResponse(
+        data={"provider": row.provider, "masked_key": _MASKED},
+        meta=Meta(request_id=str(uuid.uuid4())),
+    )

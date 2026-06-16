@@ -1,0 +1,42 @@
+---
+stepsCompleted: ['step-01-init', 'step-02-discovery', 'step-02b-vision', 'step-02c-executive-summary']
+inputDocuments: ['_bmad-output/planning-artifacts/product-brief-autom9.md']
+workflowType: 'prd'
+briefCount: 1
+researchCount: 0
+brainstormingCount: 0
+projectDocsCount: 0
+classification:
+  projectType: saas_b2b
+  domain: general
+  complexity: medium
+  projectContext: greenfield
+---
+
+# Product Requirements Document - autom9
+
+**Author:** CodeBeard
+**Date:** 2026-04-08
+
+## Executive Summary
+
+autom9 is a Tableau dashboard extension that embeds an AI agent directly into the planning tool consultants already use as their system of record. The agent enables consultants to complete planning workflows — submitting Smartsheet requests, creating Google Calendar invites, picking up open work — without leaving Tableau. The core insight: the problem is not data visibility, which Tableau already solves, but the broken link between seeing data and acting on it. Every alternative requires pulling data out of context; autom9 closes that loop inside the tool.
+
+The POC targets ~80 consultants at a professional services firm. The underlying platform — BYOM (OpenAI and Anthropic), JSON-configured workflows, no external automation dependency — is designed to support multiple agent use cases beyond the initial planning assistant. The POC proves the value of the first use case and the extensibility of the platform simultaneously.
+
+### What Makes This Special
+
+**Workflow completion in a single surface.** Tableau is where consultants review their planning data; autom9 is where they act on it — same tab, same context, no handoff to Slack, Smartsheet, or email. This is architecturally only possible as a native Tableau Extension.
+
+**BYOM + JSON-driven extensibility.** New agent workflows are added via configuration, not bespoke engineering. The platform is explicitly designed to support a growing library of agent workflows. This directly counters Salesforce Einstein's model-locked, CRM-centric approach to AI in Tableau.
+
+**No direct competitor.** No commercially available Tableau extension offers BYOM agentic workflows with external tool integration. The competitive window is estimated at 12–18 months before Salesforce closes it with a native Agentforce integration.
+
+## Project Classification
+
+| | |
+|---|---|
+| **Project Type** | B2B SaaS / Platform |
+| **Domain** | AI / Workflow Automation |
+| **Complexity** | Medium |
+| **Project Context** | Greenfield |

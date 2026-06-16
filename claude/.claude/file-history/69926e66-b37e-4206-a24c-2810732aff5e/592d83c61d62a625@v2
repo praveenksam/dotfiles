@@ -1,0 +1,49 @@
+/**
+ * Thin wrapper around window.tableau.extensions.initializeAsync().
+ * Resolves immediately when Tableau runtime is absent (dev/test environment).
+ */
+
+type TableauExtensions = {
+  extensions: {
+    initializeAsync: () => Promise<void>;
+  };
+};
+
+declare global {
+  interface Window {
+    tableau?: TableauExtensions;
+  }
+}
+
+let initialized = false;
+
+/**
+ * Returns the Tableau user identifier from the extension context.
+ * Falls back to "dev-user" when no Tableau runtime is present (dev/test).
+ * Must be called AFTER initializeExtension() resolves.
+ */
+export function getTableauUserId(): string {
+  if (typeof window === 'undefined' || !window.tableau) {
+    return 'dev-user';
+  }
+  try {
+    // tableau.extensions.environment.context is available post-initializeAsync()
+    const context = (window.tableau.extensions as unknown as {
+      environment?: { context?: { user?: { userId?: string } } };
+    }).environment?.context;
+    return context?.user?.userId ?? 'unknown-user';
+  } catch {
+    return 'unknown-user';
+  }
+}
+
+export async function initializeExtension(): Promise<void> {
+  if (typeof window === 'undefined' || !window.tableau) {
+    // No Tableau runtime — running in dev/test outside Tableau Desktop/Cloud.
+    // Resolve immediately so the extension shell renders normally.
+    return;
+  }
+  if (initialized) return;
+  initialized = true;
+  await window.tableau.extensions.initializeAsync();
+}

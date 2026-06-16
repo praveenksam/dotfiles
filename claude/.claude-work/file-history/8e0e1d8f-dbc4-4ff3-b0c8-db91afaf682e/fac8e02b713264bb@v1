@@ -1,0 +1,266 @@
+# Developer Walk-Me Guide
+### How to run, test, and change autom9
+
+This guide assumes you have Docker, Node.js, and `uv` installed but limited familiarity with the codebase. It covers everything from first boot to making and verifying a code change.
+
+---
+
+## 1. What the project is
+
+autom9 is two things that work together:
+
+| Part | What it is | Where it lives |
+|---|---|---|
+| **Backend** | A Python/FastAPI REST API | `autom9-backend/` |
+| **Extension** | A Tableau extension (Svelte/TypeScript UI) | `autom9-extension/` |
+
+The backend is what you'll spend most of your time on. It connects to a Postgres database, talks to LLMs (OpenAI/Anthropic), and integrates with external tools like Smartsheet and Google Calendar.
+
+---
+
+## 2. First-time setup
+
+### 2a. Environment file
+
+The backend needs secrets to start. Copy the example and fill in the two required values:
+
+```bash
+cp autom9-backend/.env.example autom9-backend/.env
+```
+
+Edit `autom9-backend/.env` — the only two lines that need real values for local dev:
+
+```
+ENCRYPTION_KEY=<any 32-byte base64 string>
+BACKEND_SECRET=<any string you choose, e.g. "localdev">
+```
+
+To generate a valid `ENCRYPTION_KEY`:
+```bash
+uv run python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"
+```
+Run that from `autom9-backend/`. Paste the output into `.env`.
+
+### 2b. Start the database
+
+```bash
+docker-compose up db
+```
+
+This starts a Postgres 16 container on port 5432. Leave it running in a terminal.
+
+### 2c. Run database migrations
+
+```bash
+cd autom9-backend
+uv run alembic upgrade head
+```
+
+This creates all the tables. You only need to do this once (and again after any migration files are added).
+
+---
+
+## 3. Running the backend
+
+```bash
+cd autom9-backend
+uv run uvicorn app.main:app --reload --port 8000
+```
+
+`--reload` means the server restarts automatically when you save a Python file — you don't need to restart it manually after changes.
+
+The API is now at `http://localhost:8000`. Check it's working:
+
+```bash
+curl http://localhost:8000/health
+# → {"status":"ok"}
+```
+
+Interactive API docs (great for exploring endpoints):
+```
+http://localhost:8000/docs
+```
+
+---
+
+## 4. Running the tests
+
+All backend tests live in `autom9-backend/tests/`. **Tests do not need the backend server running** — they spin up their own in-memory app. They do need Postgres running (`docker-compose up db`).
+
+### Run everything:
+```bash
+cd autom9-backend
+uv run pytest -v
+```
+
+### Run a single test file:
+```bash
+uv run pytest tests/integrations/test_google_calendar.py -v
+```
+
+### Run a single test by name:
+```bash
+uv run pytest tests/integrations/test_google_calendar.py::test_health_check_ok -v
+```
+
+### Run with coverage (see which lines are untested):
+```bash
+uv run pytest --cov=app --cov-report=term-missing
+```
+
+**Always use `uv run` prefix** — do not use `python`, `python3`, or bare `pytest`.
+
+---
+
+## 5. How the tests work
+
+You don't need a real LLM key or real Google Calendar credentials to run tests. The tests use **mocks** — fake stand-ins that simulate the external services.
+
+The test setup (`tests/conftest.py`) automatically:
+- Generates a throwaway encryption key
+- Points to a local test database (`autom9_test`)
+- Creates all tables before tests and drops them after
+- Wraps each test in a transaction that rolls back — so tests never leave dirty data
+
+If a test uses the HTTP client, it goes through the real FastAPI app but with a fake database session injected. No real HTTP calls are made to Google, Smartsheet, etc. unless you explicitly write a test that does so.
+
+---
+
+## 6. Project layout (the parts you'll touch)
+
+```
+autom9-backend/
+├── app/
+│   ├── api/                  ← HTTP endpoints (routes, request handling)
+│   │   ├── chat.py           ← The main chat + tool-confirmation flow
+│   │   ├── integrations.py   ← Health check endpoints
+│   │   └── admin/            ← Admin routes (credentials, config, logs)
+│   ├── integrations/         ← External service clients
+│   │   ├── base.py           ← Interface every integration must implement
+│   │   ├── google_calendar.py← Google Calendar (story 3.6)
+│   │   ├── smartsheet.py     ← Smartsheet (story 3.5)
+│   │   └── __init__.py       ← Registry of all integrations
+│   ├── agent/
+│   │   ├── masking.py        ← PII token masking / rehydration
+│   │   └── provider_factory.py← LLM provider loader
+│   ├── core/
+│   │   ├── config.py         ← All env vars live here (Settings class)
+│   │   └── exceptions.py     ← Custom exceptions (IntegrationError, etc.)
+│   ├── models/               ← Database table definitions (SQLAlchemy)
+│   └── schemas/              ← Request/response shapes (Pydantic)
+└── tests/                    ← Mirror of app/ — one test file per module
+```
+
+**Rule of thumb:** when you change a file in `app/integrations/`, the corresponding test is in `tests/integrations/`. Same pattern everywhere.
+
+---
+
+## 7. Making a code change — end to end
+
+Here's the full loop for a typical change.
+
+### Step 1 — Find the file
+
+If you're changing how Google Calendar works: `app/integrations/google_calendar.py`.  
+If you're adding an env var: `app/core/config.py` (add it to the `Settings` class).  
+If you're changing an API endpoint: `app/api/<relevant_file>.py`.
+
+### Step 2 — Make the change
+
+Edit the file. The server reloads automatically (if it's running with `--reload`).
+
+### Step 3 — Run the relevant tests
+
+```bash
+cd autom9-backend
+uv run pytest tests/integrations/test_google_calendar.py -v
+```
+
+If tests fail, the output will show you exactly which assertion failed and on which line.
+
+### Step 4 — Run the full suite
+
+```bash
+uv run pytest -v
+```
+
+207 tests should pass. If something outside your file broke, you'll see it here.
+
+### Step 5 — Manual smoke test (optional)
+
+With the server running (`uv run uvicorn app.main:app --reload`), you can hit the API directly:
+
+```bash
+# Check all integration health statuses
+curl http://localhost:8000/api/integrations/status
+
+# Check a specific integration (requires admin header)
+curl -H "X-Autom9-Admin: <your BACKEND_SECRET>" \
+     http://localhost:8000/api/integrations/test/google_calendar
+```
+
+---
+
+## 8. Adding a new env var
+
+1. Open `app/core/config.py`
+2. Add a field to the `Settings` class:
+   ```python
+   MY_NEW_VAR: str | None = None      # optional
+   MY_REQUIRED_VAR: str = "default"   # with default
+   ```
+3. Add it to `autom9-backend/.env` (and `.env.example`)
+4. Access it anywhere in the app: `from app.core.config import settings` then `settings.MY_NEW_VAR`
+
+---
+
+## 9. Adding a new integration
+
+All integrations follow the same pattern as `google_calendar.py`:
+
+1. Create `app/integrations/my_service.py`
+2. Inherit from `IntegrationBase` (defined in `app/integrations/base.py`)
+3. Implement `name`, `health_check()`, and `execute(action, params)`
+4. Register it in `app/integrations/__init__.py` by adding it to `ALL_INTEGRATIONS`
+5. Create `tests/integrations/test_my_service.py` — mock `httpx.AsyncClient` to avoid real HTTP calls
+
+The `health_check()` method **must never raise** — always return an `IntegrationStatus`. The `execute()` method raises `IntegrationError` on failure.
+
+---
+
+## 10. Common commands cheat sheet
+
+```bash
+# Start the database
+docker-compose up db
+
+# Start the backend server (auto-reloads on change)
+cd autom9-backend && uv run uvicorn app.main:app --reload --port 8000
+
+# Run all tests
+cd autom9-backend && uv run pytest -v
+
+# Run one test file
+cd autom9-backend && uv run pytest tests/integrations/test_google_calendar.py -v
+
+# Run migrations after pulling new changes
+cd autom9-backend && uv run alembic upgrade head
+
+# Generate a new encryption key
+cd autom9-backend && uv run python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"
+
+# Check test coverage for a module
+cd autom9-backend && uv run pytest --cov=app/integrations --cov-report=term-missing
+```
+
+---
+
+## 11. When something goes wrong
+
+| Symptom | Likely cause | Fix |
+|---|---|---|
+| `connection refused` on port 5432 | Postgres not running | `docker-compose up db` |
+| `ENCRYPTION_KEY not set` on startup | Missing `.env` | Copy `.env.example`, generate key |
+| `ModuleNotFoundError` | Dependencies not installed | `uv sync` from `autom9-backend/` |
+| Test fails with `IntegrationError` unexpectedly | Monkeypatch not setting all credentials | Check `_configured()` helper in the test |
+| Alembic complains about head | New migration added by someone else | `uv run alembic upgrade head` |

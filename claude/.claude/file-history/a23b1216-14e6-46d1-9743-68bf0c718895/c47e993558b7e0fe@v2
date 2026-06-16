@@ -1,0 +1,563 @@
+# Story 3.2: Token Masking & Rehydration Pipeline
+
+Status: ready-for-dev
+
+## Story
+
+As a **consultant**,
+I want my personal and client data to be protected from exposure to external LLM providers,
+So that sensitive planning information stays within the organisation regardless of which AI model is used.
+
+## Acceptance Criteria
+
+**Given** consultant data (names, client identifiers, engagement IDs) enters `app/agent/`
+**When** `masking.py` processes the data
+**Then** all identifiable fields are replaced with opaque tokens (e.g. `CONSULTANT_001`, `CLIENT_001`, `ENGAGEMENT_001`) before any LLM call is made (FR17, NFR6)
+
+**Given** a session token map is initialised
+**When** the extension loads (session start)
+**Then** `sessionStore` holds an empty `Map<string, string>` — never populated from `localStorage` or `sessionStorage`
+**And** the token map resets to empty on every extension load
+
+**Given** the LLM returns a response containing masked tokens
+**When** `masking.py` rehydrates the response
+**Then** all opaque tokens are replaced with their real values from the session token map before output is displayed or tool actions are executed (FR18)
+
+**Given** a log entry is written after an LLM call
+**When** the masking filter applies
+**Then** the log contains `masked_input` and `masked_output` only — no raw consultant names, client names, or engagement IDs appear anywhere in the log (NFR7)
+
+**Given** `app/agent/masking.py` tests are run
+**When** coverage is measured
+**Then** branch coverage is 100% — this is a hard acceptance gate; the story is not done until this is met (ARC-9)
+
+---
+
+## Tasks / Subtasks
+
+### [ ] Task 1 — Add `pytest-cov` to dev dependencies
+
+ARC-9 requires measurable branch coverage. `pytest-cov` is not currently installed.
+
+Edit `autom9-backend/pyproject.toml`, `[tool.uv.sources]` or `[project.optional-dependencies]` dev section:
+
+```toml
+[project.optional-dependencies]
+dev = [
+    "pytest>=9.0.3",
+    "pytest-asyncio>=1.3.0",
+    "pytest-cov>=6.0.0",
+]
+```
+
+Install: `uv sync --extra dev`
+
+Verify: `uv run pytest --co -q --cov=app.agent.masking 2>&1` should no longer error on unknown `--cov` flag.
+
+---
+
+### [ ] Task 2 — Create `app/agent/masking.py`
+
+Create `autom9-backend/app/agent/masking.py`:
+
+```python
+"""
+Token masking and rehydration pipeline for the autom9 agent.
+
+This module is the ONLY place where PII masking/rehydration logic lives.
+It must NEVER be inlined in orchestration code.
+
+ARC-9: 100% branch coverage is a hard acceptance gate for this file.
+"""
+from __future__ import annotations
+
+
+class MaskingError(Exception):
+    """Raised when masking is attempted on invalid input."""
+
+
+# Category → token prefix mapping.
+# "generic" is intentionally absent — it hits the .get() default branch ("VALUE").
+_CATEGORY_PREFIXES: dict[str, str] = {
+    "consultant": "CONSULTANT",
+    "client": "CLIENT",
+    "engagement": "ENGAGEMENT",
+}
+
+
+class TokenMap:
+    """Session-scoped bidirectional mapping of opaque tokens ↔ real values.
+
+    Lifecycle: created at session start, reset on every extension load.
+    Never persisted to any storage — in-memory only.
+    Thread-safe for single-process async use (Python GIL + no concurrent writes).
+    """
+
+    def __init__(self) -> None:
+        self._token_to_real: dict[str, str] = {}
+        self._real_to_token: dict[str, str] = {}
+        self._counters: dict[str, int] = {}
+
+    def register(self, real_value: str, category: str = "generic") -> str:
+        """Return the opaque token for *real_value*, registering it if not yet seen.
+
+        Idempotent: the same real value always maps to the same token within a session.
+        Raises MaskingError if *real_value* is empty.
+        """
+        if not real_value:
+            raise MaskingError("Cannot mask empty value")
+        if real_value in self._real_to_token:
+            return self._real_to_token[real_value]
+        prefix = _CATEGORY_PREFIXES.get(category, "VALUE")
+        count = self._counters.get(category, 0) + 1
+        self._counters[category] = count
+        token = f"{prefix}_{count:03d}"
+        self._token_to_real[token] = real_value
+        self._real_to_token[real_value] = token
+        return token
+
+    def rehydrate(self, text: str) -> str:
+        """Replace all known tokens in *text* with their real values.
+
+        Returns *text* unchanged if empty or if no tokens are present.
+        """
+        if not text:
+            return text
+        result = text
+        for token, real in self._token_to_real.items():
+            result = result.replace(token, real)
+        return result
+
+    def reset(self) -> None:
+        """Clear all mappings. Called at session end / extension reload."""
+        self._token_to_real.clear()
+        self._real_to_token.clear()
+        self._counters.clear()
+
+    @property
+    def is_empty(self) -> bool:
+        """True if no values have been registered yet."""
+        return not bool(self._token_to_real)
+
+
+def _infer_category(field_name: str) -> str:
+    """Infer the masking category from a field name (case-insensitive substring match).
+
+    Rules (first match wins):
+    - "consultant" in name → "consultant"
+    - "client" in name     → "client"
+    - "engagement" in name → "engagement"
+    - otherwise            → "generic"
+    """
+    lower = field_name.lower()
+    if "consultant" in lower:
+        return "consultant"
+    if "client" in lower:
+        return "client"
+    if "engagement" in lower:
+        return "engagement"
+    return "generic"
+
+
+def mask_fields(fields: dict[str, str], token_map: TokenMap) -> dict[str, str]:
+    """Mask a dict of {field_name: real_value} pairs.
+
+    Category is inferred from the field name via `_infer_category`.
+    Returns a new dict with the same keys and token values.
+    Empty *fields* dict → returns empty dict.
+    """
+    return {
+        field_name: token_map.register(real_value, _infer_category(field_name))
+        for field_name, real_value in fields.items()
+    }
+
+
+def mask_text(text: str, token_map: TokenMap) -> str:
+    """Replace any registered real values that appear in *text* with their tokens.
+
+    Applies longest-match-first to prevent partial substitutions
+    (e.g. "Acme Corp" masked before "Acme" if both are registered).
+    Returns *text* unchanged if empty.
+    """
+    if not text:
+        return text
+    result = text
+    for real, token in sorted(token_map._real_to_token.items(), key=lambda kv: -len(kv[0])):
+        result = result.replace(real, token)
+    return result
+
+
+def rehydrate_text(text: str, token_map: TokenMap) -> str:
+    """Replace all known tokens in *text* with their real values.
+
+    Thin wrapper around `TokenMap.rehydrate` — callers should use this function
+    rather than calling `token_map.rehydrate` directly, so all rehydration flows
+    through the same entry point for future auditing.
+    """
+    return token_map.rehydrate(text)
+```
+
+**Design notes:**
+- `"generic"` is absent from `_CATEGORY_PREFIXES` intentionally — hits the `.get(category, "VALUE")` default branch for 100% coverage.
+- `mask_text` sorts by descending real-value length for longest-match-first to prevent partial substitutions (e.g. "Acme Corp" → `CLIENT_001` before "Acme" could match).
+- `rehydrate_text` is a thin wrapper so all rehydration is trackable from a single call site.
+- `TokenMap` must NEVER be serialised or written to any storage — in-memory only.
+- This module has NO imports from `app.*` other than stdlib — it must remain a pure utility with no framework coupling.
+
+---
+
+### [ ] Task 3 — Create `tests/agent/test_masking.py` with 100% branch coverage (ARC-9)
+
+The test file must achieve **100% branch coverage** on `app/agent/masking.py`. This is a hard gate.
+
+Create `autom9-backend/tests/agent/test_masking.py`:
+
+```python
+"""
+Tests for app/agent/masking.py — ARC-9: 100% branch coverage required.
+
+Run with: uv run pytest tests/agent/test_masking.py --cov=app.agent.masking --cov-branch --cov-report=term-missing --cov-fail-under=100
+"""
+
+import pytest
+
+from app.agent.masking import (
+    MaskingError,
+    TokenMap,
+    _infer_category,
+    mask_fields,
+    mask_text,
+    rehydrate_text,
+)
+
+
+# ---------------------------------------------------------------------------
+# TokenMap.register — branches: empty value, already registered, new value (known category),
+#                                new value (unknown category → "VALUE" default)
+# ---------------------------------------------------------------------------
+
+
+def test_register_empty_value_raises():
+    tm = TokenMap()
+    with pytest.raises(MaskingError, match="Cannot mask empty value"):
+        tm.register("")
+
+
+def test_register_assigns_token_for_known_category():
+    tm = TokenMap()
+    token = tm.register("John Smith", "consultant")
+    assert token == "CONSULTANT_001"
+
+
+def test_register_idempotent():
+    """Same real value always maps to same token."""
+    tm = TokenMap()
+    t1 = tm.register("John Smith", "consultant")
+    t2 = tm.register("John Smith", "consultant")
+    assert t1 == t2
+
+
+def test_register_multiple_same_category():
+    tm = TokenMap()
+    t1 = tm.register("Acme Corp", "client")
+    t2 = tm.register("Beta Ltd", "client")
+    assert t1 == "CLIENT_001"
+    assert t2 == "CLIENT_002"
+    assert t1 != t2
+
+
+def test_register_unknown_category_uses_value_prefix():
+    """'generic' (and any unrecognised category) hits the .get() default → 'VALUE'."""
+    tm = TokenMap()
+    token = tm.register("some-value", "generic")
+    assert token == "VALUE_001"
+
+
+def test_register_unknown_arbitrary_category_uses_value_prefix():
+    """Truly unknown category name also hits the default."""
+    tm = TokenMap()
+    token = tm.register("xyz", "completely_unknown")
+    assert token == "VALUE_001"
+
+
+def test_register_engagement_category():
+    tm = TokenMap()
+    token = tm.register("ENG-2024-001", "engagement")
+    assert token == "ENGAGEMENT_001"
+
+
+# ---------------------------------------------------------------------------
+# TokenMap.rehydrate — branches: empty text, text with tokens, text without tokens
+# ---------------------------------------------------------------------------
+
+
+def test_rehydrate_empty_string_returns_empty():
+    tm = TokenMap()
+    assert tm.rehydrate("") == ""
+
+
+def test_rehydrate_replaces_known_tokens():
+    tm = TokenMap()
+    tm.register("John Smith", "consultant")
+    result = tm.rehydrate("Agent spoke to CONSULTANT_001 about the project.")
+    assert result == "Agent spoke to John Smith about the project."
+
+
+def test_rehydrate_text_without_tokens_unchanged():
+    tm = TokenMap()
+    tm.register("John Smith", "consultant")
+    text = "No tokens here at all."
+    assert tm.rehydrate(text) == text
+
+
+def test_rehydrate_multiple_tokens():
+    tm = TokenMap()
+    tm.register("John Smith", "consultant")
+    tm.register("Acme Corp", "client")
+    result = tm.rehydrate("CONSULTANT_001 works for CLIENT_001.")
+    assert result == "John Smith works for Acme Corp."
+
+
+# ---------------------------------------------------------------------------
+# TokenMap.reset
+# ---------------------------------------------------------------------------
+
+
+def test_reset_clears_all_state():
+    tm = TokenMap()
+    tm.register("John Smith", "consultant")
+    assert not tm.is_empty
+    tm.reset()
+    assert tm.is_empty
+    # After reset, same value gets a new token (counter reset too)
+    token = tm.register("John Smith", "consultant")
+    assert token == "CONSULTANT_001"
+
+
+# ---------------------------------------------------------------------------
+# TokenMap.is_empty — branches: True (empty), False (not empty)
+# ---------------------------------------------------------------------------
+
+
+def test_is_empty_true_on_new_map():
+    tm = TokenMap()
+    assert tm.is_empty is True
+
+
+def test_is_empty_false_after_register():
+    tm = TokenMap()
+    tm.register("value", "generic")
+    assert tm.is_empty is False
+
+
+# ---------------------------------------------------------------------------
+# _infer_category — all 4 branches
+# ---------------------------------------------------------------------------
+
+
+def test_infer_category_consultant():
+    assert _infer_category("consultant_name") == "consultant"
+    assert _infer_category("CONSULTANT_ID") == "consultant"
+
+
+def test_infer_category_client():
+    assert _infer_category("client_identifier") == "client"
+    assert _infer_category("ClientName") == "client"
+
+
+def test_infer_category_engagement():
+    assert _infer_category("engagement_id") == "engagement"
+    assert _infer_category("EngagementRef") == "engagement"
+
+
+def test_infer_category_generic():
+    assert _infer_category("open_days") == "generic"
+    assert _infer_category("start_date") == "generic"
+    assert _infer_category("") == "generic"
+
+
+# ---------------------------------------------------------------------------
+# mask_fields — empty dict, non-empty dict with mixed categories
+# ---------------------------------------------------------------------------
+
+
+def test_mask_fields_empty_dict():
+    tm = TokenMap()
+    result = mask_fields({}, tm)
+    assert result == {}
+
+
+def test_mask_fields_assigns_tokens_by_field_name():
+    tm = TokenMap()
+    fields = {
+        "consultant_name": "Jane Doe",
+        "client_name": "Acme Corp",
+        "engagement_id": "ENG-001",
+        "open_days": "5",
+    }
+    masked = mask_fields(fields, tm)
+    assert masked["consultant_name"] == "CONSULTANT_001"
+    assert masked["client_name"] == "CLIENT_001"
+    assert masked["engagement_id"] == "ENGAGEMENT_001"
+    assert masked["open_days"] == "VALUE_001"
+
+
+def test_mask_fields_idempotent_across_calls():
+    tm = TokenMap()
+    first = mask_fields({"consultant_name": "Jane Doe"}, tm)
+    second = mask_fields({"consultant_name": "Jane Doe"}, tm)
+    assert first == second
+
+
+# ---------------------------------------------------------------------------
+# mask_text — empty text, text with real values, text without real values
+# ---------------------------------------------------------------------------
+
+
+def test_mask_text_empty_string_returns_empty():
+    tm = TokenMap()
+    assert mask_text("", tm) == ""
+
+
+def test_mask_text_replaces_real_values_with_tokens():
+    tm = TokenMap()
+    tm.register("Jane Doe", "consultant")
+    result = mask_text("Jane Doe is available for the project.", tm)
+    assert result == "CONSULTANT_001 is available for the project."
+
+
+def test_mask_text_no_match_unchanged():
+    tm = TokenMap()
+    tm.register("Jane Doe", "consultant")
+    text = "No real values here."
+    assert mask_text(text, tm) == text
+
+
+def test_mask_text_longest_match_first():
+    """'Acme Corp' registered before 'Acme' — longer match takes priority."""
+    tm = TokenMap()
+    tm.register("Acme Corp", "client")
+    tm.register("Acme", "client")
+    result = mask_text("Acme Corp is a client and Acme is its short name.", tm)
+    # "Acme Corp" → CLIENT_001, "Acme" → CLIENT_002
+    assert "Acme Corp" not in result
+    assert "CLIENT_001" in result
+
+
+# ---------------------------------------------------------------------------
+# rehydrate_text — delegates to TokenMap.rehydrate (thin wrapper)
+# ---------------------------------------------------------------------------
+
+
+def test_rehydrate_text_replaces_tokens():
+    tm = TokenMap()
+    tm.register("Jane Doe", "consultant")
+    result = rehydrate_text("CONSULTANT_001 submitted a request.", tm)
+    assert result == "Jane Doe submitted a request."
+
+
+def test_rehydrate_text_empty_unchanged():
+    tm = TokenMap()
+    assert rehydrate_text("", tm) == ""
+```
+
+**Coverage gate enforcement:** After implementing, run:
+```
+uv run pytest tests/agent/test_masking.py --cov=app.agent.masking --cov-branch --cov-report=term-missing --cov-fail-under=100
+```
+
+This must pass at 100% before the story can be marked done.
+
+---
+
+### [ ] Task 4 — Update `sessionStore` with `tokenMap` field
+
+Modify `autom9-extension/src/stores/session.svelte.ts`:
+
+```typescript
+/**
+ * Session store — holds session_id for the current extension session.
+ * Created on extension load via POST /api/sessions.
+ * Resets on every extension load (never persisted to localStorage).
+ */
+class SessionStore {
+  sessionId = $state<string | null>(null);
+  tableauUserId = $state<string | null>(null);
+  /**
+   * Token map: opaque token → real value.
+   * Reset to empty Map on every extension load (never persisted to storage).
+   * Populated during agent interactions (story 3.3+).
+   */
+  tokenMap = $state<Map<string, string>>(new Map());
+}
+
+export const sessionStore = new SessionStore();
+```
+
+**Why**: The AC requires `sessionStore` to hold an empty `Map<string, string>` on load. Adding it here establishes the field for story 3.3 to populate during agent calls. The map is always initialised from `new Map()` — never from `localStorage` or `sessionStorage`.
+
+---
+
+## Dev Notes
+
+### No migration required
+
+`masking.py` is a pure utility with no DB tables, no new API endpoints, and no external service calls. No Alembic migration needed.
+
+### ARC-9 is a hard gate — story is NOT done without 100% branch coverage
+
+The acceptance criterion is explicit: "branch coverage is 100% — this is a hard acceptance gate; the story is not done until this is met." Run the coverage command in Task 3 and verify it reports `100%` before marking done.
+
+**Installing pytest-cov (Task 1 is mandatory):**
+```
+uv add --dev pytest-cov
+```
+or manually add to `pyproject.toml` and run `uv sync --extra dev` / `uv sync`.
+
+### `_CATEGORY_PREFIXES` design
+
+The `"generic"` category is intentionally absent from `_CATEGORY_PREFIXES`. This means:
+- `_CATEGORY_PREFIXES.get("generic", "VALUE")` hits the default branch → "VALUE"
+- 100% branch coverage on that `.get()` call is achievable
+- Tests must exercise both a known category (e.g. "consultant") AND the "generic" path
+
+### `mask_text` longest-match-first
+
+`sorted(..., key=lambda kv: -len(kv[0]))` sorts real values by descending length before substitution. This prevents "Acme" matching inside "Acme Corp" and corrupting it before the longer value can be replaced. This is a branch-neutral algorithmic choice — no branch required.
+
+### `tokenMap` in `sessionStore` is frontend-only for now
+
+In story 3.2, the `tokenMap` field in `sessionStore` is added but not populated. Story 3.3 (agent chat) will:
+- Receive masked tokens from the backend response
+- Store the reverse mapping if needed for display purposes
+
+The backend's `TokenMap` instance is created per-session in `app/agent/` and is the authoritative source of truth for masking.
+
+### `mask_text` vs `mask_fields`
+
+- `mask_fields`: takes structured data `{field_name: real_value}` → returns masked dict. Use when processing worksheet rows or structured inputs before building the LLM prompt.
+- `mask_text`: takes a free-form string → replaces any registered real values found in it. Use when masking narrative text that may contain previously-seen real values.
+- `rehydrate_text`: inverse of `mask_text` — replaces tokens in LLM output with real values.
+
+### Existing agent test patterns (from `tests/agent/`)
+
+- Test files import internal helpers directly: `from app.agent.openai_provider import _normalize_finish_reason`
+- Use `AsyncMock` from `unittest.mock` for async calls
+- `pytestmark = pytest.mark.asyncio(loop_scope="session")` at file top for async tests (not needed here — `masking.py` is sync-only)
+- Tests do NOT use `db_session` or `client` fixtures — pure unit tests
+
+### File locations summary
+
+| File | Action |
+|------|--------|
+| `autom9-backend/pyproject.toml` | Modify — add `pytest-cov` to dev dependencies |
+| `autom9-backend/app/agent/masking.py` | Create — `TokenMap`, `mask_fields`, `mask_text`, `rehydrate_text` |
+| `autom9-backend/tests/agent/test_masking.py` | Create — full branch coverage test suite |
+| `autom9-extension/src/stores/session.svelte.ts` | Modify — add `tokenMap: Map<string, string>` |
+
+### Previous story learnings (from 3.1)
+
+- New test files in `tests/agent/` already have `__init__.py` — no need to create it.
+- `uv run pytest <specific-file>` works for targeted runs.
+- TypeScript `$state<T>` class field syntax is Svelte 5 runes — must match existing store pattern exactly.
+- `Map<string, string>` in TypeScript: initialise with `new Map()`, not `{}`.

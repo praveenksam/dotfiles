@@ -1,0 +1,130 @@
+import logging
+import uuid
+
+from fastapi import APIRouter, Header, HTTPException
+
+from app.config.workflow_registry import workflow_registry
+from app.core.exceptions import IntegrationError
+from app.integrations.google_docs import GoogleDocsIntegration
+from app.schemas.data import OpportunityItem, OpenWorkResponse, TaskItem, TasksResponse
+from app.schemas.status import Meta
+
+router = APIRouter(prefix="/api/data", tags=["data"])
+
+logger = logging.getLogger(__name__)
+
+_google_docs = GoogleDocsIntegration()
+
+
+@router.get(
+    "/tasks",
+    response_model=TasksResponse,
+    status_code=200,
+)
+async def get_tasks(
+    x_autom9_session: str | None = Header(default=None),
+) -> TasksResponse:
+    """
+    Fetch consultant task list from the configured Google Doc.
+
+    Reads google_docs_url from the active workflow config's data_panel section.
+    Returns 503 if integration is unavailable.
+    Returns 404 if no data_panel config is present.
+    No admin auth required — accessible to any session holder (same as /api/status).
+    """
+    active = workflow_registry.active_config
+    if active is None:
+        raise HTTPException(status_code=404, detail="No workflow config loaded")
+
+    data_panel = active.get("data_panel")
+    if not data_panel:
+        raise HTTPException(status_code=404, detail="data_panel not configured")
+
+    google_docs_url = data_panel.get("google_docs_url")
+    if not google_docs_url:
+        raise HTTPException(status_code=404, detail="google_docs_url not configured")
+
+    logger.info(
+        "data_tasks_fetch",
+        extra={
+            "session_id": x_autom9_session or "unknown",
+            "integration": "google_docs",
+        },
+    )
+
+    try:
+        result = await _google_docs.execute("fetch_tasks", {"url": google_docs_url})
+    except IntegrationError as exc:
+        logger.warning(
+            "data_tasks_fetch_failed",
+            extra={"integration": exc.integration, "error": str(exc)},
+        )
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+
+    tasks = [TaskItem(text=str(item)) for item in result.get("tasks", [])]
+    return TasksResponse(data=tasks, meta=Meta(request_id=str(uuid.uuid4())))
+
+
+@router.get(
+    "/open-work",
+    response_model=OpenWorkResponse,
+    status_code=200,
+)
+async def get_open_work(
+    x_autom9_session: str | None = Header(default=None),
+) -> OpenWorkResponse:
+    """
+    Fetch org-wide open work opportunities from the configured Google Doc.
+
+    Reads google_docs_url from the active workflow config's open_work_board section.
+    Returns opportunities sorted: billable first, internal second.
+    Returns 503 if integration is unavailable.
+    Returns 404 if no open_work_board config is present.
+    """
+    active = workflow_registry.active_config
+    if active is None:
+        raise HTTPException(status_code=404, detail="No workflow config loaded")
+
+    open_work_board = active.get("open_work_board")
+    if not open_work_board:
+        raise HTTPException(status_code=404, detail="open_work_board not configured")
+
+    google_docs_url = open_work_board.get("google_docs_url")
+    if not google_docs_url:
+        raise HTTPException(status_code=404, detail="open_work_board.google_docs_url not configured")
+
+    logger.info(
+        "data_open_work_fetch",
+        extra={
+            "session_id": x_autom9_session or "unknown",
+            "integration": "google_docs",
+        },
+    )
+
+    try:
+        result = await _google_docs.execute("fetch_open_work", {"url": google_docs_url})
+    except IntegrationError as exc:
+        logger.warning(
+            "data_open_work_fetch_failed",
+            extra={"integration": exc.integration, "error": str(exc)},
+        )
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+
+    raw = result.get("opportunities", [])
+    # Sort: billable first, internal second (stable sort preserves within-group order)
+    sorted_opps = sorted(raw, key=lambda o: 0 if o.get("type") == "billable" else 1)
+    opportunities = []
+    for o in sorted_opps:
+        opp_type = o.get("type")
+        # Coerce anything outside the closed set to "internal" so a malformed
+        # integration response doesn't 500 the endpoint at Pydantic validation.
+        if opp_type not in ("billable", "internal"):
+            opp_type = "internal"
+        opportunities.append(
+            OpportunityItem(
+                title=o.get("title", ""),
+                type=opp_type,
+                details=o.get("details", ""),
+            )
+        )
+    return OpenWorkResponse(data=opportunities, meta=Meta(request_id=str(uuid.uuid4())))

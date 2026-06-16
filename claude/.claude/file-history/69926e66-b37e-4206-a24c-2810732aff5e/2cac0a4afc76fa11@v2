@@ -1,0 +1,108 @@
+import pytest
+from httpx import AsyncClient
+
+pytestmark = pytest.mark.asyncio(loop_scope="session")
+
+ADMIN_HEADERS = {"X-Autom9-Token": "test-backend-secret"}
+
+
+async def test_upsert_credential_returns_masked_key(client: AsyncClient):
+    response = await client.post(
+        "/api/admin/credentials",
+        json={"provider": "openai", "api_key": "sk-real-key"},
+        headers=ADMIN_HEADERS,
+    )
+    assert response.status_code == 200
+    body = response.json()
+    assert body["data"]["provider"] == "openai"
+    assert body["data"]["masked_key"] == "••••••••"
+    assert "sk-real-key" not in response.text
+    assert "request_id" in body["meta"]
+
+
+async def test_upsert_credential_requires_auth(client: AsyncClient):
+    response = await client.post(
+        "/api/admin/credentials",
+        json={"provider": "openai", "api_key": "sk-key"},
+    )
+    assert response.status_code == 401
+
+
+async def test_upsert_credential_rejects_blank_key(client: AsyncClient):
+    response = await client.post(
+        "/api/admin/credentials",
+        json={"provider": "openai", "api_key": "   "},
+        headers=ADMIN_HEADERS,
+    )
+    assert response.status_code == 422
+
+
+async def test_upsert_credential_rejects_unknown_provider(client: AsyncClient):
+    response = await client.post(
+        "/api/admin/credentials",
+        json={"provider": "google", "api_key": "key"},
+        headers=ADMIN_HEADERS,
+    )
+    assert response.status_code == 422
+
+
+async def test_upsert_is_idempotent(client: AsyncClient):
+    """Second upsert for same provider succeeds and key is updated."""
+    for key in ("sk-first", "sk-second"):
+        response = await client.post(
+            "/api/admin/credentials",
+            json={"provider": "anthropic", "api_key": key},
+            headers=ADMIN_HEADERS,
+        )
+        assert response.status_code == 200
+        assert response.json()["data"]["masked_key"] == "••••••••"
+
+
+async def test_get_credential_returns_masked(client: AsyncClient):
+    await client.post(
+        "/api/admin/credentials",
+        json={"provider": "openai", "api_key": "sk-for-get"},
+        headers=ADMIN_HEADERS,
+    )
+    response = await client.get("/api/admin/credentials/openai", headers=ADMIN_HEADERS)
+    assert response.status_code == 200
+    body = response.json()
+    assert body["data"]["masked_key"] == "••••••••"
+    assert "sk-for-get" not in response.text
+
+
+async def test_get_credential_404_when_missing(client: AsyncClient):
+    response = await client.get(
+        "/api/admin/credentials/nonexistent", headers=ADMIN_HEADERS
+    )
+    assert response.status_code == 404
+
+
+async def test_get_credential_requires_auth(client: AsyncClient):
+    response = await client.get("/api/admin/credentials/openai")
+    assert response.status_code == 401
+
+
+async def test_plaintext_never_in_db(client: AsyncClient, db_session):
+    """Verify stored value is encrypted, not the raw key."""
+    from sqlalchemy import select
+
+    from app.models.credential_store import CredentialStore
+
+    raw_key = "sk-must-not-appear-in-db"
+    await client.post(
+        "/api/admin/credentials",
+        json={"provider": "openai", "api_key": raw_key},
+        headers=ADMIN_HEADERS,
+    )
+    result = await db_session.execute(
+        select(CredentialStore).where(
+            CredentialStore.org_id == "default",
+            CredentialStore.provider == "openai",
+        )
+    )
+    row = result.scalar_one_or_none()
+    assert row is not None
+    assert raw_key not in row.encrypted_key
+    # Fernet ciphertext starts with "gAAAAA"
+    assert row.encrypted_key.startswith("gAAAAA")

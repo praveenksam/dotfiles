@@ -1,0 +1,417 @@
+# Developer Walk-Me Guide
+### How to navigate, test, and extend autom9
+
+This guide assumes you have Docker, Node.js, and `uv` installed but limited familiarity with the codebase. It covers first boot, making and verifying a code change, and how all the pieces connect.
+
+---
+
+## 1. What the project is
+
+autom9 is two things:
+
+| Part | What it is | Where it lives |
+|---|---|---|
+| **Backend** | Python/FastAPI REST API | `autom9-backend/` |
+| **Extension** | Tableau extension (Svelte/TypeScript UI) | `autom9-extension/` |
+
+The backend connects to Postgres, talks to LLMs (OpenAI/Anthropic), and integrates with external tools (Google Calendar, Google Docs, Smartsheet). The extension is embedded inside Tableau and calls the backend API.
+
+---
+
+## 2. First-time setup
+
+### 2a. Environment file
+
+```bash
+cp autom9-backend/.env.example autom9-backend/.env
+```
+
+The only two values you need to fill in for local dev:
+
+```
+ENCRYPTION_KEY=<any 32-byte base64 string>
+BACKEND_SECRET=<any string, e.g. "localdev">
+```
+
+Generate a valid encryption key:
+```bash
+cd autom9-backend
+uv run python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"
+```
+
+### 2b. Start the database
+
+```bash
+docker-compose up db
+```
+
+Starts Postgres 16 on port 5432. Leave it running.
+
+### 2c. Run migrations
+
+```bash
+cd autom9-backend
+uv run alembic upgrade head
+```
+
+Only needed once, then again after anyone adds migration files.
+
+---
+
+## 3. Running the backend
+
+```bash
+cd autom9-backend
+uv run uvicorn app.main:app --reload --port 8000
+```
+
+`--reload` restarts automatically on every Python file save.
+
+Health check:
+```bash
+curl http://localhost:8000/health
+# → {"status":"ok"}
+```
+
+Interactive API explorer (browse and call all endpoints):
+```
+http://localhost:8000/docs
+```
+
+---
+
+## 4. Running the frontend (extension)
+
+```bash
+cp autom9-extension/.env.example autom9-extension/.env
+# VITE_BACKEND_URL=http://localhost:8000 (already correct for local dev)
+
+cd autom9-extension
+npm install
+npm run dev
+```
+
+Dev server starts at `http://localhost:5173`. This runs outside Tableau — some Tableau-specific features will be stubbed, but the panels and API calls work.
+
+---
+
+## 5. Running the tests
+
+Tests live in `autom9-backend/tests/`. They **do not need the server running** — they spin up their own in-memory app. They **do need Postgres running** (`docker-compose up db`).
+
+```bash
+# Run everything
+cd autom9-backend
+uv run pytest -v
+
+# Run one file
+uv run pytest tests/integrations/test_google_calendar.py -v
+
+# Run one test by name
+uv run pytest tests/integrations/test_google_calendar.py::test_health_check_ok -v
+
+# Coverage — see which lines are untested
+uv run pytest --cov=app --cov-report=term-missing
+```
+
+**Always use `uv run`** — never bare `python`, `python3`, or `pytest`.
+
+---
+
+## 6. How the tests work
+
+No real LLM keys or Google credentials are needed. Every external call is **mocked** — the tests use fake stand-ins that simulate the real services.
+
+`tests/conftest.py` does this automatically for every test:
+- Generates a throwaway `ENCRYPTION_KEY`
+- Points to `autom9_test` (a separate local database)
+- Creates all tables before the suite starts, drops them after
+- Wraps each test in a transaction that **rolls back** — dirty data never persists between tests
+
+When you write a test against the HTTP client, it runs through the real FastAPI app with a fake database session injected. No HTTP calls go to Google, Smartsheet, etc. unless you write one that explicitly does.
+
+---
+
+## 7. Full project layout
+
+```
+autom9-backend/
+├── app/
+│   ├── main.py               ← FastAPI app bootstrap, router registration, CORS
+│   ├── api/                  ← HTTP endpoints (routes, request handling)
+│   │   ├── chat.py           ← Main chat + tool-confirmation flow
+│   │   ├── data.py           ← Public data endpoints: /tasks, /open-work
+│   │   ├── integrations.py   ← Integration health-check endpoints
+│   │   ├── sessions.py       ← Session creation
+│   │   ├── status.py         ← Global status endpoint
+│   │   └── admin/            ← Admin routes (credentials, config, logs)
+│   ├── agent/                ← LLM abstraction layer
+│   │   ├── masking.py        ← PII token masking / rehydration
+│   │   └── provider_factory.py ← Loads Anthropic or OpenAI provider
+│   ├── config/               ← Workflow configuration system
+│   │   └── workflow_schema.py ← Pydantic validation models for workflow JSON
+│   ├── core/
+│   │   ├── config.py         ← All env vars (Settings class, read from .env)
+│   │   └── exceptions.py     ← Custom exceptions (IntegrationError, etc.)
+│   ├── db/                   ← Database layer
+│   │   ├── engine.py         ← Async SQLAlchemy engine setup
+│   │   └── dependencies.py   ← FastAPI get_db() dependency
+│   ├── integrations/         ← External service clients
+│   │   ├── base.py           ← Abstract interface every integration must implement
+│   │   ├── google_calendar.py← Google Calendar (create invites)
+│   │   ├── google_docs.py    ← Google Docs (fetch tasks, fetch open work)
+│   │   ├── smartsheet.py     ← Smartsheet
+│   │   └── __init__.py       ← ALL_INTEGRATIONS registry
+│   ├── models/               ← SQLAlchemy ORM table definitions
+│   ├── schemas/              ← Pydantic request/response shapes
+│   │   ├── data.py           ← TaskItem, TasksResponse, OpportunityItem, OpenWorkResponse
+│   │   └── status.py         ← Meta, StatusResponse
+│   └── services/             ← Business logic helpers
+│       └── encryption.py     ← Fernet-based credential encryption
+└── tests/                    ← One file per app module
+    ├── conftest.py           ← Fixtures: engine, db_session, client
+    ├── agent/                ← Tests for provider implementations and masking
+    ├── api/                  ← Tests for every API route
+    │   ├── test_data.py      ← Tests for /api/data/tasks and /api/data/open-work
+    │   └── test_open_work.py ← Additional open-work behaviour tests
+    ├── config/               ← Tests for workflow config validation
+    └── integrations/         ← Tests for each external service client
+
+autom9-extension/src/
+├── App.svelte                ← Root component: init, routing, shell
+├── main.ts                   ← Vite entry point
+├── app.css                   ← Global styles
+├── components/
+│   ├── DataPanel.svelte      ← Task list fetched from /api/data/tasks
+│   ├── OpenWorkPanel.svelte  ← Opportunities fetched from /api/data/open-work
+│   ├── ChatPanel.svelte      ← Chat interface
+│   ├── StatusBar.svelte      ← Integration health badges
+│   ├── AdminConfig.svelte    ← Admin panel (shown with ?admin query param)
+│   ├── WorkflowConfigPanel.svelte ← Edit workflow JSON in-browser
+│   ├── ActionConfirm.svelte  ← Tool-use confirmation dialog
+│   ├── InputBar.svelte       ← Chat input field
+│   └── MessageList.svelte    ← Chat history
+├── lib/
+│   ├── api.ts                ← Typed API client (all fetch calls go here)
+│   └── tableau.ts            ← Tableau extension runtime shim
+└── stores/
+    ├── session.svelte.ts     ← Session ID, Tableau user ID
+    ├── status.svelte.ts      ← Integration statuses
+    ├── chat.svelte.ts        ← Chat messages and streaming state
+    └── data.svelte.ts        ← Task and opportunity data
+```
+
+**Rule of thumb:** when you change `app/integrations/google_docs.py`, the test is `tests/integrations/test_google_docs.py`. Same pattern everywhere.
+
+---
+
+## 8. How a request travels end to end
+
+Take **"load open work opportunities"** as a concrete example:
+
+1. `OpenWorkPanel.svelte` mounts → calls `lib/api.ts` → `GET /api/data/open-work`
+2. `app/api/data.py` handles the route:
+   - reads `open_work_board.google_docs_url` from the active workflow config
+   - calls `GoogleDocsIntegration().execute("fetch_open_work", {"url": ...})`
+3. `app/integrations/google_docs.py`:
+   - refreshes the OAuth2 access token (cached, thread-safe)
+   - fetches the Google Doc via the Docs API
+   - parses section headers (`Billable` / `Internal`) into structured items
+4. Route handler maps the result to `OpenWorkResponse` (Pydantic schema in `app/schemas/data.py`)
+5. JSON response returns → `OpenWorkPanel` renders badge + title for each item
+
+To understand **any** feature, follow this same path: frontend component → `lib/api.ts` → backend route (`app/api/`) → integration or service → schema.
+
+---
+
+## 9. The workflow config system
+
+Each "workflow" is a JSON blob stored in the database that tells the agent:
+- What tools it can call (`tools` list)
+- What instructions to follow (`agent_instructions`)
+- Where to read task data (`data_panel.google_docs_url`)
+- Where to read open work (`open_work_board.google_docs_url`)
+
+`app/config/workflow_schema.py` validates this JSON using Pydantic. Key model:
+
+```python
+class WorkflowConfigSchema(BaseModel):
+    version: str              # semver, e.g. "1.0.0"
+    workflow_id: str          # unique identifier
+    tools: list[ToolDefinition]
+    agent_instructions: str
+    data_panel: DataPanelConfig | None
+    open_work_board: OpenWorkBoardConfig | None
+```
+
+Each `ToolDefinition` maps a tool name → integration name → action string, which is how the chat agent knows to call `GoogleCalendarIntegration.execute("create_invite", ...)` when the LLM invokes the `create_calendar_invite` tool.
+
+You can edit the active workflow config at runtime through the `AdminConfig` panel (visible when the extension URL has `?admin` in it).
+
+---
+
+## 10. The integration system
+
+All integrations implement the same three-method contract (`app/integrations/base.py`):
+
+```python
+class IntegrationBase(ABC):
+    @property
+    @abstractmethod
+    def name(self) -> str: ...         # e.g. "google_calendar"
+
+    async def health_check(self) -> IntegrationStatus: ...
+    # NEVER raises — always returns status="healthy" or status="unavailable"
+
+    async def execute(self, action: str, params: dict) -> dict: ...
+    # Raises IntegrationError on failure — caught at the API layer → HTTP 503
+```
+
+Registered integrations (from `app/integrations/__init__.py`):
+
+| Integration | `name` | Actions |
+|---|---|---|
+| `GoogleCalendarIntegration` | `google_calendar` | `create_invite` |
+| `GoogleDocsIntegration` | `google_docs` | `fetch_tasks`, `fetch_open_work` |
+| `SmartsheetIntegration` | `smartsheet` | (various) |
+| `TableauDataIntegration` | `tableau` | (placeholder) |
+
+---
+
+## 11. Making a code change — end to end
+
+### Step 1 — Find the file
+
+| What you're changing | Where to look |
+|---|---|
+| API endpoint | `app/api/<name>.py` |
+| Integration logic | `app/integrations/<name>.py` |
+| Request/response shape | `app/schemas/<name>.py` |
+| Env var | `app/core/config.py` → `Settings` class |
+| Workflow config structure | `app/config/workflow_schema.py` |
+| Frontend component | `autom9-extension/src/components/<Name>.svelte` |
+| API calls from frontend | `autom9-extension/src/lib/api.ts` |
+
+### Step 2 — Make the change
+
+Edit the file. The server reloads automatically (if running with `--reload`).
+
+### Step 3 — Run the relevant tests
+
+```bash
+cd autom9-backend
+uv run pytest tests/integrations/test_google_docs.py -v
+```
+
+Test output shows exactly which assertion failed and on which line.
+
+### Step 4 — Run the full suite
+
+```bash
+uv run pytest -v
+```
+
+If something outside your file breaks, you'll see it here.
+
+### Step 5 — Manual smoke test (optional)
+
+```bash
+# Check all integration statuses
+curl http://localhost:8000/api/status
+
+# Fetch open-work data (requires active workflow config with open_work_board set)
+curl http://localhost:8000/api/data/open-work
+
+# Fetch task list
+curl http://localhost:8000/api/data/tasks
+
+# Test a specific integration (requires admin header)
+curl -H "X-Autom9-Admin: localdev" \
+     http://localhost:8000/api/integrations/test/google_docs
+```
+
+---
+
+## 12. Adding a new env var
+
+1. Open `app/core/config.py`
+2. Add a field to the `Settings` class:
+   ```python
+   MY_NEW_VAR: str | None = None      # optional
+   MY_REQUIRED_VAR: str = "default"   # with default
+   ```
+3. Add it to `autom9-backend/.env` and `autom9-backend/.env.example`
+4. Access anywhere: `from app.core.config import settings` → `settings.MY_NEW_VAR`
+
+---
+
+## 13. Adding a new integration
+
+Follow the same pattern as `google_docs.py`:
+
+1. Create `app/integrations/my_service.py`
+2. Inherit from `IntegrationBase`
+3. Implement `name`, `health_check()`, `execute(action, params)`
+4. Register in `app/integrations/__init__.py` → append to `ALL_INTEGRATIONS`
+5. Create `tests/integrations/test_my_service.py` — mock `httpx.AsyncClient` to avoid real HTTP calls
+
+Rules:
+- `health_check()` **must never raise** — catch everything, return `status="unavailable"` on error
+- `execute()` **raises `IntegrationError`** on failure — this becomes HTTP 503 at the API layer
+
+---
+
+## 14. Adding a new data endpoint
+
+The `/api/data/` pattern (tasks, open-work) is the blueprint:
+
+1. Add a schema to `app/schemas/data.py` (item model + response model)
+2. Add a route to `app/api/data.py` — read config, call integration, return response model
+3. Add or extend the integration action if needed (`execute("my_action", ...)`)
+4. Add a test in `tests/api/test_data.py` — mock the integration's `execute()` method
+5. Add a Svelte component in `autom9-extension/src/components/` and wire it up in `App.svelte`
+
+---
+
+## 15. Common commands cheat sheet
+
+```bash
+# Start the database
+docker-compose up db
+
+# Start the backend (auto-reload)
+cd autom9-backend && uv run uvicorn app.main:app --reload --port 8000
+
+# Start the frontend dev server
+cd autom9-extension && npm run dev
+
+# Run all tests
+cd autom9-backend && uv run pytest -v
+
+# Run one test file
+cd autom9-backend && uv run pytest tests/integrations/test_google_docs.py -v
+
+# Run with coverage
+cd autom9-backend && uv run pytest --cov=app --cov-report=term-missing
+
+# Run migrations after pulling new changes
+cd autom9-backend && uv run alembic upgrade head
+
+# Generate a new encryption key
+cd autom9-backend && uv run python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"
+```
+
+---
+
+## 16. When something goes wrong
+
+| Symptom | Likely cause | Fix |
+|---|---|---|
+| `connection refused` on port 5432 | Postgres not running | `docker-compose up db` |
+| `ENCRYPTION_KEY not set` on startup | Missing `.env` | Copy `.env.example`, generate key |
+| `ModuleNotFoundError` | Dependencies not installed | `uv sync` from `autom9-backend/` |
+| `404` on `/api/data/open-work` | No active workflow config, or `open_work_board` not set | Configure via admin panel |
+| `503` on any data endpoint | Integration credentials missing or Google token refresh failed | Check credentials in admin panel |
+| Test fails with `IntegrationError` unexpectedly | Monkeypatch not setting all required credentials | Check `_configured()` or credential fields in the test |
+| Alembic complains about head | New migration added | `uv run alembic upgrade head` |
+| Frontend shows "Loading…" forever | Backend not running or CORS mismatch | Check `CORS_ORIGINS` in `.env` matches the dev server URL |

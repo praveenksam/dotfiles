@@ -1,0 +1,105 @@
+---
+title: 'Agent Fetch Open Work Tool'
+type: 'feature'
+created: '2026-05-01'
+status: 'done'
+baseline_commit: '8b9d5c52a64ce1440c470329eb1e8c6527938535'
+context: []
+---
+
+<frozen-after-approval reason="human-owned intent — do not modify unless human renegotiates">
+
+## Intent
+
+**Problem:** The agent cannot read open work opportunities from the org-wide Google Doc. The `OpenWorkPanel` displays them visually, but the agent has no tool to fetch or reason about them — consultants must manually copy opportunity details into chat.
+
+**Approach:** Register `fetch_open_work` as an internal auto-executing agent tool in `chat.py`. The handler reads the configured `open_work_board.google_docs_url`, calls the existing `GoogleDocsIntegration.execute("fetch_open_work", ...)`, and returns the parsed opportunities to the LLM. Add the tool definition to `example-workflow-config.json`.
+
+## Boundaries & Constraints
+
+**Always:**
+- Handler must be async (calls async `GoogleDocsIntegration.execute`).
+- `_google_docs` instance must be module-level so tests can monkeypatch it.
+- Call site in `_handle_message` already uses `inspect.isawaitable` — no change needed there.
+- `IntegrationError` from the handler must propagate to the existing 503 handler.
+- No confirmation dialog — this is a read-only internal action.
+
+**Ask First:**
+- If the spec needs to cover per-user doc scoping (different doc per consultant), halt and ask before implementing.
+
+**Never:**
+- Do not implement accept/decline flow or coordinator notification — those are post-MVP.
+- Do not change the `OpenWorkPanel` component — panel and agent tool are independent.
+- Do not change `GoogleDocsIntegration` — it already supports `fetch_open_work`.
+
+## I/O & Edge-Case Matrix
+
+| Scenario | Input / State | Expected Output / Behavior | Error Handling |
+|----------|--------------|---------------------------|----------------|
+| Happy path | LLM calls `fetch_open_work`; valid Google Doc URL configured; doc readable | Opportunities list returned to LLM; LLM produces natural-language reply; no `pending_action` | N/A |
+| No board config | `open_work_board` key missing or null in active workflow config | `IntegrationError("google_docs", "open_work_board.google_docs_url not configured")` | Propagates → HTTP 503 |
+| Docs integration error | Google OAuth fails / network error during `execute` | `IntegrationError` raised by integration | Propagates → HTTP 503 |
+
+</frozen-after-approval>
+
+## Code Map
+
+- `autom9-backend/app/api/chat.py` -- add `GoogleDocsIntegration` import, module-level `_google_docs` instance, `_run_fetch_open_work` async handler, register in `_INTERNAL_ACTIONS`
+- `autom9-backend/app/integrations/google_docs.py` -- already implements `fetch_open_work` action; read-only reference
+- `docs/example-workflow-config.json` -- add `fetch_open_work` tool definition so LLM knows when to call it
+- `autom9-backend/tests/api/test_chat.py` -- add 3 tests: happy path, no board config → 503, docs integration error → 503
+
+## Tasks & Acceptance
+
+**Execution:**
+- [x] `autom9-backend/app/api/chat.py` -- add `from app.integrations.google_docs import GoogleDocsIntegration` import, `_google_docs = GoogleDocsIntegration()` module-level instance, async `_run_fetch_open_work` handler that reads `open_work_board.google_docs_url` from active config and calls `_google_docs.execute("fetch_open_work", {"url": url})`, register as `_INTERNAL_ACTIONS["fetch_open_work"]` -- wires the tool into the existing internal-action auto-execute path
+- [x] `docs/example-workflow-config.json` -- add `fetch_open_work` tool entry (name, description, empty parameters, `integration: null`, `action: "fetch_open_work"`) before `check_capacity` -- exposes the tool to the LLM via workflow config
+- [x] `autom9-backend/tests/api/test_chat.py` -- add `_CONFIG_WITH_OPEN_WORK_TOOL` fixture dict + 3 async tests covering the I/O matrix rows above; monkeypatch `_google_docs` and `workflow_registry` following the `check_capacity` test pattern -- validates auto-execute path, missing config 503, and integration failure 503
+
+**Acceptance Criteria:**
+- Given a workflow config with `fetch_open_work` tool and valid `open_work_board.google_docs_url`, when the LLM calls `fetch_open_work`, then the handler executes without a confirmation dialog and the LLM receives the opportunity list in a tool-result message.
+- Given `open_work_board` is null or missing from the workflow config, when the handler runs, then the endpoint returns HTTP 503.
+- Given the Google Docs integration raises `IntegrationError`, when the handler runs, then the endpoint returns HTTP 503.
+- Given the tool is registered as internal, when the LLM calls it, then no `pending_action` is returned to the frontend.
+
+## Spec Change Log
+
+## Verification
+
+**Commands:**
+- `cd autom9-backend && uv run pytest tests/api/test_chat.py -v` -- expected: all existing tests pass + 3 new tests pass
+- `cd autom9-backend && uv run python -c "from app.api.chat import router; print('OK')"` -- expected: `OK` (no import errors)
+
+## Suggested Review Order
+
+**Handler registration**
+
+- Entry point: async handler wired into internal-action auto-execute path
+  [`chat.py:65`](../../autom9-backend/app/api/chat.py#L65)
+
+- Handler reads board URL from config, delegates to existing integration
+  [`chat.py:69`](../../autom9-backend/app/api/chat.py#L69)
+
+**Type correctness (patch from review)**
+
+- Updated `_INTERNAL_ACTIONS` type to allow sync or async handlers
+  [`chat.py:39`](../../autom9-backend/app/api/chat.py#L39)
+
+- Dispatch site awaits coroutine if handler is async
+  [`chat.py:207`](../../autom9-backend/app/api/chat.py#L207)
+
+**Workflow config**
+
+- Tool definition exposes `fetch_open_work` to the LLM
+  [`example-workflow-config.json:13`](../../docs/example-workflow-config.json#L13)
+
+**Tests**
+
+- Happy path: auto-execute, tool result fed to LLM, no pending_action
+  [`test_chat.py:370`](../../autom9-backend/tests/api/test_chat.py#L370)
+
+- Missing board config → 503
+  [`test_chat.py:420`](../../autom9-backend/tests/api/test_chat.py#L420)
+
+- Integration error → 503
+  [`test_chat.py:445`](../../autom9-backend/tests/api/test_chat.py#L445)

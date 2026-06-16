@@ -1,0 +1,48 @@
+<script lang="ts">
+  import { onMount } from 'svelte';
+  import { initializeExtension } from './lib/tableau';
+
+  type Status = 'loading' | 'ready' | 'error';
+
+  let status = $state<Status>('loading');
+  let errorMessage = $state('');
+
+  onMount(async () => {
+    try {
+      await initializeExtension();
+      status = 'ready';
+    } catch (err) {
+      errorMessage =
+        err instanceof Error ? err.message : 'Extension failed to initialize';
+      status = 'error';
+    }
+  });
+</script>
+
+{#if status === 'loading'}
+  <div class="autom9-loading">
+    <p>Loading autom9…</p>
+  </div>
+{:else if status === 'error'}
+  <div class="autom9-error">
+    <p><strong>autom9 failed to load</strong></p>
+    <p>{errorMessage}</p>
+  </div>
+{:else}
+  <!-- Extension shell — components added in subsequent stories (1.3+) -->
+  <div class="autom9-shell">
+    <p>autom9 ready.</p>
+  </div>
+{/if}
+
+<style>
+  .autom9-loading,
+  .autom9-error,
+  .autom9-shell {
+    font-family: sans-serif;
+    padding: 1rem;
+  }
+  .autom9-error {
+    color: #c00;
+  }
+</style>

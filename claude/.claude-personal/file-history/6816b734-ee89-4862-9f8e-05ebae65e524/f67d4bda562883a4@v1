@@ -1,0 +1,205 @@
+import pytest
+from unittest.mock import AsyncMock, MagicMock, patch
+
+from app.core.exceptions import IntegrationError
+from app.integrations.smartsheet import SmartsheetIntegration
+
+pytestmark = pytest.mark.asyncio(loop_scope="session")
+
+# ---------------------------------------------------------------------------
+# health_check
+# ---------------------------------------------------------------------------
+
+
+async def test_health_check_not_configured(monkeypatch):
+    monkeypatch.setattr("app.integrations.smartsheet.settings.SMARTSHEET_API_TOKEN", None)
+    monkeypatch.setattr("app.integrations.smartsheet.settings.SMARTSHEET_SHEET_ID", None)
+    integration = SmartsheetIntegration()
+    result = await integration.health_check()
+    assert result.status == "unavailable"
+    assert "SMARTSHEET_API_TOKEN" in (result.error or "")
+
+
+async def test_health_check_ok(monkeypatch):
+    monkeypatch.setattr("app.integrations.smartsheet.settings.SMARTSHEET_API_TOKEN", "tok")
+    monkeypatch.setattr("app.integrations.smartsheet.settings.SMARTSHEET_SHEET_ID", "123")
+
+    mock_response = MagicMock()
+    mock_response.status_code = 200
+
+    mock_client = AsyncMock()
+    mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+    mock_client.__aexit__ = AsyncMock(return_value=False)
+    mock_client.get = AsyncMock(return_value=mock_response)
+
+    with patch("app.integrations.smartsheet.httpx.AsyncClient", return_value=mock_client):
+        integration = SmartsheetIntegration()
+        result = await integration.health_check()
+
+    assert result.status == "ok"
+    assert result.error is None
+
+
+async def test_health_check_api_error(monkeypatch):
+    monkeypatch.setattr("app.integrations.smartsheet.settings.SMARTSHEET_API_TOKEN", "tok")
+    monkeypatch.setattr("app.integrations.smartsheet.settings.SMARTSHEET_SHEET_ID", "123")
+
+    mock_response = MagicMock()
+    mock_response.status_code = 401
+
+    mock_client = AsyncMock()
+    mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+    mock_client.__aexit__ = AsyncMock(return_value=False)
+    mock_client.get = AsyncMock(return_value=mock_response)
+
+    with patch("app.integrations.smartsheet.httpx.AsyncClient", return_value=mock_client):
+        integration = SmartsheetIntegration()
+        result = await integration.health_check()
+
+    assert result.status == "unavailable"
+    assert "401" in (result.error or "")
+
+
+# ---------------------------------------------------------------------------
+# execute — not configured
+# ---------------------------------------------------------------------------
+
+
+async def test_execute_not_configured_raises(monkeypatch):
+    monkeypatch.setattr("app.integrations.smartsheet.settings.SMARTSHEET_API_TOKEN", None)
+    monkeypatch.setattr("app.integrations.smartsheet.settings.SMARTSHEET_SHEET_ID", None)
+    integration = SmartsheetIntegration()
+    with pytest.raises(IntegrationError) as exc_info:
+        await integration.execute("submit_planning_request", {})
+    assert exc_info.value.integration == "smartsheet"
+
+
+# ---------------------------------------------------------------------------
+# execute — unknown action
+# ---------------------------------------------------------------------------
+
+
+async def test_execute_unknown_action_raises(monkeypatch):
+    monkeypatch.setattr("app.integrations.smartsheet.settings.SMARTSHEET_API_TOKEN", "tok")
+    monkeypatch.setattr("app.integrations.smartsheet.settings.SMARTSHEET_SHEET_ID", "123")
+    integration = SmartsheetIntegration()
+    with pytest.raises(IntegrationError) as exc_info:
+        await integration.execute("delete_row", {})
+    assert "Unknown action" in str(exc_info.value)
+
+
+# ---------------------------------------------------------------------------
+# execute — submit_planning_request success
+# ---------------------------------------------------------------------------
+
+
+async def test_execute_submit_planning_request_success(monkeypatch):
+    monkeypatch.setattr("app.integrations.smartsheet.settings.SMARTSHEET_API_TOKEN", "tok")
+    monkeypatch.setattr("app.integrations.smartsheet.settings.SMARTSHEET_SHEET_ID", "999")
+
+    columns_response = MagicMock()
+    columns_response.status_code = 200
+    columns_response.json.return_value = {
+        "data": [
+            {"id": 1001, "title": "Consultant Name"},
+            {"id": 1002, "title": "Start Date"},
+        ]
+    }
+
+    post_response = MagicMock()
+    post_response.status_code = 200
+    post_response.json.return_value = {"result": {"rows": [{"id": 555}]}}
+
+    get_call_count = 0
+
+    async def fake_get(url, **kwargs):
+        nonlocal get_call_count
+        get_call_count += 1
+        return columns_response
+
+    mock_client = AsyncMock()
+    mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+    mock_client.__aexit__ = AsyncMock(return_value=False)
+    mock_client.get = fake_get
+    mock_client.post = AsyncMock(return_value=post_response)
+
+    with patch("app.integrations.smartsheet.httpx.AsyncClient", return_value=mock_client):
+        integration = SmartsheetIntegration()
+        result = await integration.execute(
+            "submit_planning_request",
+            {"consultant_name": "John Smith", "start_date": "2025-06-01"},
+        )
+
+    assert result["status"] == "submitted"
+    assert result["row_id"] == 555
+
+    call_args = mock_client.post.call_args
+    sent_body = call_args.kwargs["json"]
+    cells = sent_body[0]["cells"]
+    assert {"columnId": 1001, "value": "John Smith"} in cells
+    assert {"columnId": 1002, "value": "2025-06-01"} in cells
+
+
+async def test_execute_column_cache_used_on_second_call(monkeypatch):
+    monkeypatch.setattr("app.integrations.smartsheet.settings.SMARTSHEET_API_TOKEN", "tok")
+    monkeypatch.setattr("app.integrations.smartsheet.settings.SMARTSHEET_SHEET_ID", "999")
+
+    columns_response = MagicMock()
+    columns_response.status_code = 200
+    columns_response.json.return_value = {
+        "data": [{"id": 1001, "title": "Consultant Name"}]
+    }
+    post_response = MagicMock()
+    post_response.status_code = 200
+    post_response.json.return_value = {"result": {"rows": [{"id": 1}]}}
+
+    get_calls = []
+
+    async def fake_get(url, **kwargs):
+        get_calls.append(url)
+        return columns_response
+
+    mock_client = AsyncMock()
+    mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+    mock_client.__aexit__ = AsyncMock(return_value=False)
+    mock_client.get = fake_get
+    mock_client.post = AsyncMock(return_value=post_response)
+
+    with patch("app.integrations.smartsheet.httpx.AsyncClient", return_value=mock_client):
+        integration = SmartsheetIntegration()
+        await integration.execute("submit_planning_request", {"consultant_name": "Alice"})
+        await integration.execute("submit_planning_request", {"consultant_name": "Bob"})
+
+    assert len(get_calls) == 1
+
+
+# ---------------------------------------------------------------------------
+# execute — API failure
+# ---------------------------------------------------------------------------
+
+
+async def test_execute_api_failure_raises_integration_error(monkeypatch):
+    monkeypatch.setattr("app.integrations.smartsheet.settings.SMARTSHEET_API_TOKEN", "tok")
+    monkeypatch.setattr("app.integrations.smartsheet.settings.SMARTSHEET_SHEET_ID", "999")
+
+    columns_response = MagicMock()
+    columns_response.status_code = 200
+    columns_response.json.return_value = {
+        "data": [{"id": 1001, "title": "Consultant Name"}]
+    }
+    post_response = MagicMock()
+    post_response.status_code = 500
+
+    mock_client = AsyncMock()
+    mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+    mock_client.__aexit__ = AsyncMock(return_value=False)
+    mock_client.get = AsyncMock(return_value=columns_response)
+    mock_client.post = AsyncMock(return_value=post_response)
+
+    with patch("app.integrations.smartsheet.httpx.AsyncClient", return_value=mock_client):
+        integration = SmartsheetIntegration()
+        with pytest.raises(IntegrationError) as exc_info:
+            await integration.execute("submit_planning_request", {"consultant_name": "Alice"})
+
+    assert exc_info.value.integration == "smartsheet"
+    assert "500" in str(exc_info.value)

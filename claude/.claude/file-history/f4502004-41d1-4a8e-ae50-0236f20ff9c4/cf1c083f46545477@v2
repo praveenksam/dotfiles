@@ -1,0 +1,87 @@
+from unittest.mock import AsyncMock, MagicMock, patch
+
+import pytest
+
+from app.agent.provider_factory import get_provider
+from app.core.exceptions import ProviderError
+
+
+def _make_db_with_row(provider_name: str, encrypted_key: str = "enc_key"):
+    """Helper: mock AsyncSession returning a CredentialStore row."""
+    mock_row = MagicMock()
+    mock_row.provider = provider_name
+    mock_row.encrypted_key = encrypted_key
+
+    mock_result = MagicMock()
+    mock_result.scalar_one_or_none.return_value = mock_row
+
+    mock_db = AsyncMock()
+    mock_db.execute.return_value = mock_result
+    return mock_db
+
+
+def _make_db_no_row():
+    """Helper: mock AsyncSession returning no active credential."""
+    mock_result = MagicMock()
+    mock_result.scalar_one_or_none.return_value = None
+
+    mock_db = AsyncMock()
+    mock_db.execute.return_value = mock_result
+    return mock_db
+
+
+@pytest.mark.asyncio
+async def test_get_provider_returns_openai_provider():
+    mock_db = _make_db_with_row("openai")
+    with patch("app.agent.provider_factory.decrypt", return_value="real-key"):
+        provider = await get_provider(mock_db)
+
+    from app.agent.openai_provider import OpenAIProvider
+    assert isinstance(provider, OpenAIProvider)
+
+
+@pytest.mark.asyncio
+async def test_get_provider_returns_anthropic_provider():
+    mock_db = _make_db_with_row("anthropic")
+    with patch("app.agent.provider_factory.decrypt", return_value="real-key"):
+        provider = await get_provider(mock_db)
+
+    from app.agent.anthropic_provider import AnthropicProvider
+    assert isinstance(provider, AnthropicProvider)
+
+
+@pytest.mark.asyncio
+async def test_get_provider_decrypts_api_key():
+    mock_db = _make_db_with_row("openai", encrypted_key="encrypted_value")
+    with patch("app.agent.provider_factory.decrypt", return_value="decrypted-key") as mock_decrypt:
+        await get_provider(mock_db)
+    mock_decrypt.assert_called_once_with("encrypted_value")
+
+
+@pytest.mark.asyncio
+async def test_get_provider_raises_provider_error_when_no_active_credential():
+    mock_db = _make_db_no_row()
+    with pytest.raises(ProviderError) as exc_info:
+        await get_provider(mock_db)
+    assert "No active LLM provider" in str(exc_info.value)
+    assert exc_info.value.provider == "none"
+
+
+@pytest.mark.asyncio
+async def test_get_provider_raises_provider_error_for_unknown_provider():
+    mock_db = _make_db_with_row("unknown_provider")
+    with patch("app.agent.provider_factory.decrypt", return_value="key"):
+        with pytest.raises(ProviderError) as exc_info:
+            await get_provider(mock_db)
+    assert "Unknown provider" in str(exc_info.value)
+    assert exc_info.value.provider == "unknown_provider"
+
+
+@pytest.mark.asyncio
+async def test_get_provider_queries_active_credential_on_each_call():
+    """Each call hits the DB — no cached state — supports restart-free switching."""
+    mock_db = _make_db_with_row("openai")
+    with patch("app.agent.provider_factory.decrypt", return_value="key"):
+        await get_provider(mock_db)
+        await get_provider(mock_db)
+    assert mock_db.execute.call_count == 2

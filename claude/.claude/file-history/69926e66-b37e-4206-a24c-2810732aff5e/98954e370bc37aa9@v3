@@ -1,0 +1,79 @@
+import uuid
+
+from typing import Literal
+
+from fastapi import APIRouter, Depends, HTTPException
+from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from app.api.deps import require_admin
+from app.db.deps import get_db
+from app.models.credential_store import CredentialStore
+from app.schemas.credentials import CredentialGetResponse, CredentialUpsertRequest, CredentialUpsertResponse
+from app.schemas.status import Meta
+from app.services.encryption import encrypt
+
+_Provider = Literal["openai", "anthropic"]
+
+router = APIRouter(prefix="/api/admin/credentials", tags=["admin"])
+
+_ORG_ID = "default"
+_MASKED = "••••••••"
+
+
+@router.post("", status_code=200, response_model=CredentialUpsertResponse, dependencies=[Depends(require_admin)])
+async def upsert_credential(
+    body: CredentialUpsertRequest,
+    db: AsyncSession = Depends(get_db),
+) -> CredentialUpsertResponse:
+    result = await db.execute(
+        select(CredentialStore).where(
+            CredentialStore.org_id == _ORG_ID,
+            CredentialStore.provider == body.provider,
+        )
+    )
+    row = result.scalar_one_or_none()
+    encrypted = encrypt(body.api_key)
+    if row is None:
+        new_row = CredentialStore(org_id=_ORG_ID, provider=body.provider, encrypted_key=encrypted)
+        db.add(new_row)
+        try:
+            await db.flush()
+        except IntegrityError:
+            # Concurrent upsert won the race — rollback savepoint and update instead
+            await db.rollback()
+            result2 = await db.execute(
+                select(CredentialStore).where(
+                    CredentialStore.org_id == _ORG_ID,
+                    CredentialStore.provider == body.provider,
+                )
+            )
+            existing = result2.scalar_one()
+            existing.encrypted_key = encrypted
+    else:
+        row.encrypted_key = encrypted
+    return CredentialUpsertResponse(
+        data={"provider": body.provider, "masked_key": _MASKED},
+        meta=Meta(request_id=str(uuid.uuid4())),
+    )
+
+
+@router.get("/{provider}", status_code=200, response_model=CredentialGetResponse, dependencies=[Depends(require_admin)])
+async def get_credential(
+    provider: _Provider,
+    db: AsyncSession = Depends(get_db),
+) -> CredentialGetResponse:
+    result = await db.execute(
+        select(CredentialStore).where(
+            CredentialStore.org_id == _ORG_ID,
+            CredentialStore.provider == provider,
+        )
+    )
+    row = result.scalar_one_or_none()
+    if row is None:
+        raise HTTPException(status_code=404, detail=f"No credentials for provider '{provider}'")
+    return CredentialGetResponse(
+        data={"provider": row.provider, "masked_key": _MASKED},
+        meta=Meta(request_id=str(uuid.uuid4())),
+    )

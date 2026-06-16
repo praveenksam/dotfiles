@@ -1,0 +1,24 @@
+# Deferred Work
+
+## Deferred from: code review of 1-1-project-scaffolding-backend-foundation (2026-04-14) — fresh review
+
+- `get_db` commits on every yield including read-only requests; unnecessary COMMIT round-trip — acceptable for scaffold, optimize when throughput matters
+- `LOG_LEVEL` accepts any string including invalid values; silently ignored by logging framework — add `Literal["DEBUG","INFO","WARNING","ERROR","CRITICAL"]` constraint before logging is wired
+- Health tests create raw `AsyncClient` bypassing `override_get_db` — benign until health endpoints touch DB
+- `asyncio.run()` in `alembic/env.py` fails if outer event loop active — non-issue for CLI invocation, revisit if programmatic migration calls are added
+
+## Deferred from: code review of 1-1-project-scaffolding-backend-foundation (2026-04-14)
+
+- SAVEPOINT test fixture may need `after_transaction_end` listener for multi-commit test patterns in future stories — adequate for current tests, revisit when db_session is actually used
+- Hardcoded dev DB password `autom9/autom9` in docker-compose.yml + port 5432 exposed on host — acceptable for local dev
+- `ENCRYPTION_KEY` / `BACKEND_SECRET` accept any string with no length or entropy validation — add validation before any key-derivation or signing code ships
+- `python-jose` has known CVEs and is unmaintained; replace with `joserfc` before any JWT signing code ships
+- `uvicorn` runs as root (no `USER` in Dockerfile) with no `--workers` flag — production hardening
+- `class Session(Base)` name collides with `sqlalchemy.orm.Session`; rename to `UserSession` or `AppSession` if collision occurs in future imports
+- Alembic `upgrade head` in entrypoint has no advisory lock; multiple replicas starting concurrently may race — add pg_advisory_lock before horizontal scale
+- Module-level engine + settings creation in `engine.py` — consider lazy initialization if test coupling becomes a problem
+- No `connect_args` timeout on engine; DB unreachable = indefinite hang — add `connect_timeout` for production resilience
+- `CredentialStore` has no index on `provider` alone — add if queries filter by provider across orgs
+- `InteractionLog.session_id` FK lacks `ondelete` clause — decide CASCADE vs RESTRICT when session lifecycle is defined (story 3.x)
+- Lifespan context manager is empty — wire engine startup/shutdown in a future story
+- No `healthcheck` for `app` service in docker-compose — add for production readiness

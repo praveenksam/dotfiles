@@ -1,0 +1,175 @@
+<script lang="ts">
+  import { apiFetch, ApiError } from '../lib/api';
+  import { sessionStore } from '../stores/session.svelte';
+  import { chatStore } from '../stores/chat.svelte';
+  import { dataStore } from '../stores/data.svelte';
+  import type { ToolCallProposal } from '../stores/chat.svelte';
+  import MessageList from './MessageList.svelte';
+  import InputBar from './InputBar.svelte';
+  import ActionConfirm from './ActionConfirm.svelte';
+
+  const sessionHeaders = (): Record<string, string> =>
+    sessionStore.sessionId ? { 'X-Autom9-Session': sessionStore.sessionId } : {};
+
+  /**
+   * Build session_context from dataStore for the masking pipeline (FR17).
+   * Sends all non-empty worksheet column values as identifiable fields.
+   * Field name determines the masking category: fields containing "consultant",
+   * "client", or "engagement" get typed tokens; others get VALUE_ prefix.
+   */
+  function buildSessionContext(): Record<string, string> {
+    const ctx: Record<string, string> = {};
+    if (dataStore.worksheetRows.length > 0) {
+      const firstRow = dataStore.worksheetRows[0];
+      for (const [key, val] of Object.entries(firstRow)) {
+        if (val && typeof val === 'string' && val.trim()) {
+          ctx[key] = val;
+        }
+      }
+    }
+    return ctx;
+  }
+
+  async function sendMessage(message: string): Promise<void> {
+    chatStore.clearError();
+    chatStore.clearPendingAction();
+    chatStore.addUserMessage(message);
+    chatStore.chatState = 'loading';
+
+    try {
+      const body = {
+        message,
+        history: chatStore.history.slice(0, -1), // all turns before the one just added
+        session_context: buildSessionContext(),
+        available_days: dataStore.availableDays,
+      };
+
+      type ChatApiResponse = {
+        data: { reply: string | null; pending_action: ToolCallProposal | null };
+        meta: { request_id: string };
+      };
+
+      const response = await apiFetch<ChatApiResponse>('/api/chat', {
+        method: 'POST',
+        headers: sessionHeaders(),
+        body: JSON.stringify(body),
+      });
+
+      // If LLM returned explanatory text alongside the tool call, add it to the chat.
+      if (response.data.reply) {
+        chatStore.addAssistantMessage(response.data.reply);
+      }
+
+      if (response.data.pending_action) {
+        chatStore.setPendingAction(response.data.pending_action);
+      }
+
+      chatStore.chatState = 'idle';
+    } catch (err) {
+      const msg =
+        err instanceof ApiError
+          ? err.message
+          : err instanceof Error
+            ? err.message
+            : 'Something went wrong. Please try again.';
+      chatStore.setError(msg);
+    }
+  }
+
+  async function confirmAction(): Promise<void> {
+    const action = chatStore.pendingAction;
+    if (!action) return;
+
+    chatStore.chatState = 'loading';
+
+    try {
+      type ChatApiResponse = {
+        data: { reply: string | null; pending_action: ToolCallProposal | null };
+      };
+
+      const response = await apiFetch<ChatApiResponse>('/api/chat', {
+        method: 'POST',
+        headers: sessionHeaders(),
+        body: JSON.stringify({
+          confirm_action: {
+            tool_name: action.tool_name,
+            action: action.action,
+            params: action.params,
+          },
+          history: chatStore.history,
+          session_context: buildSessionContext(),
+        }),
+      });
+
+      chatStore.clearPendingAction();
+      chatStore.addAssistantMessage(response.data.reply ?? 'Done.');
+      chatStore.chatState = 'idle';
+    } catch (err) {
+      const msg =
+        err instanceof ApiError
+          ? err.message
+          : err instanceof Error
+            ? err.message
+            : 'Could not complete the action. Please try again.';
+      chatStore.setError(msg);
+    }
+  }
+
+  function cancelAction(): void {
+    chatStore.clearPendingAction();
+    chatStore.addAssistantMessage('Action cancelled. How else can I help?');
+    chatStore.chatState = 'idle';
+  }
+</script>
+
+<div class="chat-panel">
+  <h3>Chat</h3>
+  <div class="chat-body">
+    <MessageList messages={chatStore.messages} />
+    {#if chatStore.chatState === 'error'}
+      <p class="error">{chatStore.chatError}</p>
+    {/if}
+    {#if chatStore.pendingAction}
+      <ActionConfirm
+        action={chatStore.pendingAction}
+        onConfirm={confirmAction}
+        onCancel={cancelAction}
+      />
+    {/if}
+  </div>
+  <InputBar
+    onSend={sendMessage}
+    disabled={chatStore.chatState === 'loading' || chatStore.pendingAction !== null}
+  />
+</div>
+
+<style>
+  .chat-panel {
+    display: flex;
+    flex-direction: column;
+    height: 100%;
+    font-family: sans-serif;
+  }
+  h3 {
+    font-size: 0.875rem;
+    font-weight: 600;
+    margin: 0;
+    padding: 0.75rem 0.75rem 0.5rem;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    color: #444;
+    border-bottom: 1px solid #eee;
+  }
+  .chat-body {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+  }
+  .error {
+    color: #c00;
+    font-size: 0.8rem;
+    padding: 0.25rem 0.75rem;
+    margin: 0;
+  }
+</style>

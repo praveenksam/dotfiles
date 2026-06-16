@@ -1,0 +1,74 @@
+<script lang="ts">
+  import { statusStore } from '../stores/status.svelte';
+
+  const DISPLAY_NAMES: Record<string, string> = {
+    smartsheet: 'Smartsheet',
+    google_calendar: 'Google Calendar',
+    google_docs: 'Google Docs',
+    tableau_data: 'Tableau Data',
+  };
+</script>
+
+<div class="status-bar">
+  {#if statusStore.loading}
+    <p class="status-checking">Checking integrations…</p>
+  {:else if statusStore.error}
+    <p class="status-bar-error">Status check failed: {statusStore.error}</p>
+  {:else}
+    <ul class="status-list">
+      {#each statusStore.integrations as integration (integration.name)}
+        <li class="status-item status-{integration.status}">
+          <span class="status-indicator" aria-hidden="true">
+            {integration.status === 'healthy' ? '●' : '○'}
+          </span>
+          <span class="status-name">
+            {DISPLAY_NAMES[integration.name] ?? integration.name}
+          </span>
+          {#if integration.status === 'unavailable' && integration.error}
+            <span class="status-error-msg">— {integration.error}</span>
+          {/if}
+        </li>
+      {/each}
+    </ul>
+  {/if}
+</div>
+
+<style>
+  .status-bar {
+    font-family: sans-serif;
+    font-size: 0.85rem;
+    padding: 0.5rem 1rem;
+    border-bottom: 1px solid #e0e0e0;
+  }
+  .status-list {
+    list-style: none;
+    margin: 0;
+    padding: 0;
+    display: flex;
+    gap: 1rem;
+    flex-wrap: wrap;
+  }
+  .status-item {
+    display: flex;
+    align-items: center;
+    gap: 0.25rem;
+  }
+  .status-healthy .status-indicator {
+    color: #2e7d32;
+  }
+  .status-unavailable .status-indicator {
+    color: #c62828;
+  }
+  .status-error-msg {
+    color: #888;
+    font-size: 0.8rem;
+  }
+  .status-checking,
+  .status-bar-error {
+    margin: 0;
+    color: #555;
+  }
+  .status-bar-error {
+    color: #c62828;
+  }
+</style>

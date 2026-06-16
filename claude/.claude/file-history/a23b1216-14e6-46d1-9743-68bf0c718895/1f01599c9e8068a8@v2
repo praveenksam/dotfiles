@@ -1,0 +1,31 @@
+from datetime import datetime
+from uuid import UUID
+
+from pydantic import BaseModel
+
+from app.schemas.status import Meta
+
+
+class LogEntry(BaseModel):
+    id: UUID
+    session_id: UUID
+    masked_input: str
+    masked_output: str | None
+    tool_calls: str | None
+    latency_ms: int | None
+    timestamp: datetime
+
+
+class LogsResponse(BaseModel):
+    data: list[LogEntry]
+    meta: Meta
+
+
+class SessionLookupData(BaseModel):
+    session_id: UUID
+    tableau_user_id: str
+
+
+class SessionLookupResponse(BaseModel):
+    data: SessionLookupData
+    meta: Meta

@@ -1,0 +1,26 @@
+from typing import Annotated, Literal
+
+from pydantic import BaseModel, Field
+
+from app.schemas.status import Meta
+
+_MessageContent = Annotated[str, Field(max_length=10_000)]
+
+
+class Message(BaseModel):
+    role: Literal["user", "assistant"]
+    content: _MessageContent
+
+
+class ChatRequest(BaseModel):
+    message: _MessageContent
+    history: Annotated[list[Message], Field(max_length=100)] = []
+
+
+class ChatData(BaseModel):
+    reply: str
+
+
+class ChatResponse(BaseModel):
+    data: ChatData
+    meta: Meta

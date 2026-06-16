@@ -1,0 +1,116 @@
+import logging
+
+import httpx
+
+from app.core.config import settings
+from app.core.exceptions import IntegrationError
+from app.integrations.base import IntegrationBase, IntegrationStatus
+
+logger = logging.getLogger(__name__)
+
+_BASE_URL = "https://api.smartsheet.com/2.0"
+
+
+class SmartsheetIntegration(IntegrationBase):
+    def __init__(self) -> None:
+        self._column_cache: dict[str, int] | None = None  # normalized_name → column_id
+
+    @property
+    def name(self) -> str:
+        return "smartsheet"
+
+    def _auth_header(self) -> dict[str, str]:
+        return {"Authorization": f"Bearer {settings.SMARTSHEET_API_TOKEN}"}
+
+    async def health_check(self) -> IntegrationStatus:
+        if not settings.SMARTSHEET_API_TOKEN or not settings.SMARTSHEET_SHEET_ID:
+            return IntegrationStatus(
+                name=self.name, status="unavailable", error="SMARTSHEET_API_TOKEN not set"
+            )
+        try:
+            async with httpx.AsyncClient(timeout=10.0) as client:
+                response = await client.get(
+                    f"{_BASE_URL}/sheets/{settings.SMARTSHEET_SHEET_ID}",
+                    headers=self._auth_header(),
+                )
+            if response.status_code == 200:
+                return IntegrationStatus(name=self.name, status="ok")
+            return IntegrationStatus(
+                name=self.name,
+                status="unavailable",
+                error=f"Smartsheet API returned {response.status_code}",
+            )
+        except httpx.HTTPError as exc:
+            return IntegrationStatus(
+                name=self.name, status="unavailable", error=f"Smartsheet unreachable: {exc}"
+            )
+
+    async def _get_column_map(self) -> dict[str, int]:
+        if self._column_cache is not None:
+            return self._column_cache
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            response = await client.get(
+                f"{_BASE_URL}/sheets/{settings.SMARTSHEET_SHEET_ID}/columns",
+                headers=self._auth_header(),
+            )
+        if response.status_code != 200:
+            raise IntegrationError(
+                self.name, f"Could not fetch sheet columns: HTTP {response.status_code}"
+            )
+        data = response.json()
+        self._column_cache = {
+            col["title"].lower().replace(" ", "_"): col["id"]
+            for col in data.get("data", [])
+        }
+        return self._column_cache
+
+    async def execute(self, action: str, params: dict) -> dict:
+        if action != "submit_planning_request":
+            raise IntegrationError(self.name, f"Unknown action: {action}")
+        if not settings.SMARTSHEET_API_TOKEN or not settings.SMARTSHEET_SHEET_ID:
+            raise IntegrationError(self.name, "Smartsheet is not configured")
+
+        try:
+            column_map = await self._get_column_map()
+            cells = []
+            for key, value in params.items():
+                col_id = column_map.get(key)
+                if col_id is None:
+                    logger.warning(
+                        "smartsheet_unmapped_param",
+                        extra={"param": key, "sheet_id": settings.SMARTSHEET_SHEET_ID},
+                    )
+                    continue
+                cells.append({"columnId": col_id, "value": value})
+
+            if not cells:
+                raise IntegrationError(
+                    self.name, "No params matched any Smartsheet column — nothing to submit"
+                )
+
+            row_body = [{"toTop": True, "cells": cells}]
+            async with httpx.AsyncClient(timeout=15.0) as client:
+                response = await client.post(
+                    f"{_BASE_URL}/sheets/{settings.SMARTSHEET_SHEET_ID}/rows",
+                    headers={**self._auth_header(), "Content-Type": "application/json"},
+                    json=row_body,
+                )
+            if response.status_code not in (200, 201):
+                raise IntegrationError(
+                    self.name,
+                    f"Smartsheet rejected the planning request: HTTP {response.status_code}",
+                )
+            result = response.json()
+            row_id = result.get("result", {}).get("rows", [{}])[0].get("id", "unknown")
+            logger.info(
+                "smartsheet_row_submitted",
+                extra={"sheet_id": settings.SMARTSHEET_SHEET_ID, "row_id": row_id},
+            )
+            return {"row_id": row_id, "status": "submitted"}
+
+        except IntegrationError:
+            raise
+        except httpx.HTTPError as exc:
+            raise IntegrationError(
+                self.name, f"Smartsheet request failed: {exc}"
+            ) from exc

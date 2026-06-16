@@ -9,6 +9,8 @@ alias lt="eza --icons --tree --level=2"
 # claude setup
 alias claude-personal="CLAUDE_CONFIG_DIR=~/.claude-personal claude"
 alias claude-work="CLAUDE_CONFIG_DIR=~/.claude-work claude"
+# Tableau Desktop debug shortcut
+alias tableau-debug='open -a /Applications/Tableau\ Desktop\ \(Apple\ silicon\)\ 2026.1.app --args --webEngineArgs --remote-debugging-port=8696 & sleep 3 && open "http://localhost:8696" && echo "\n ✅ Tableau Desktop has been opened in debugging mode\n and the console is available at http://localhost:8696\n"'
 # chordpro cli setup
 alias chordpro="/Applications/ChordPro.app/Contents/MacOS/chordpro"
 # glow specifically for markdown
@@ -46,6 +48,11 @@ END {
   printf "%-12s %6.1f GB\n", "Free:",      free_gb
   printf "%-12s %6.1f GB\n", "Total:",     total
 }'\'''
+
+# projects workflow
+export PROJECTS_DIR="$HOME/Google Drive/My Drive/Projects"
+alias project-init="~/.claude/project-init.zsh"
+
 # Thinking-writing workflow
 ## Add a new thought
 alias think='uv run --project ~/Documents/personal/Local\ AI\ Thought\ Partner/python-thought-pipeline ~/Documents/personal/Local\ AI\ Thought\ Partner/python-thought-pipeline/pipeline.py add'

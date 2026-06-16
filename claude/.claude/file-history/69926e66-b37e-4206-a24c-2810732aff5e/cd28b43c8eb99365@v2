@@ -1,0 +1,17 @@
+from cryptography.fernet import Fernet
+
+from app.core.config import settings
+
+
+def _fernet() -> Fernet:
+    return Fernet(settings.ENCRYPTION_KEY.encode())
+
+
+def encrypt(plaintext: str) -> str:
+    """Return Fernet-encrypted ciphertext as a UTF-8 string."""
+    return _fernet().encrypt(plaintext.encode()).decode()
+
+
+def decrypt(ciphertext: str) -> str:
+    """Decrypt a Fernet ciphertext. Raises InvalidToken on bad key or corruption."""
+    return _fernet().decrypt(ciphertext.encode()).decode()

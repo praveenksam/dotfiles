@@ -1,0 +1,78 @@
+import json
+
+from pydantic import ValidationError
+from sqlalchemy import select, update
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from app.config.workflow_schema import WorkflowConfigSchema
+from app.models.workflow_config import WorkflowConfig
+
+
+class WorkflowRegistry:
+    """In-memory singleton holding the active workflow config.
+
+    Lifecycle:
+    - Populated from DB at app startup via load_from_db().
+    - Updated atomically on each successful register_workflow() call.
+    - Thread-safe for single-process async use (no concurrent writes from multiple
+      Uvicorn workers in v1).
+    """
+
+    def __init__(self) -> None:
+        self._active: dict | None = None
+
+    def validate_schema(self, config: dict) -> WorkflowConfigSchema:
+        """Parse and validate config dict. Raises ValidationError on failure."""
+        return WorkflowConfigSchema.model_validate(config)
+
+    async def register_workflow(self, config: dict, db: AsyncSession) -> WorkflowConfig:
+        """Validate, persist to DB as active, and update in-memory state.
+
+        All previous rows are deactivated atomically before the new row is inserted.
+        Raises pydantic.ValidationError if config is invalid — in-memory state is NOT
+        updated, leaving the previous active config intact (NFR10 rollback safety).
+        """
+        parsed = self.validate_schema(config)  # raises ValidationError before any DB write
+
+        # Deactivate all existing active configs
+        await db.execute(update(WorkflowConfig).values(is_active=False))
+
+        row = WorkflowConfig(
+            version=parsed.version,
+            config_json=json.dumps(config),
+            is_active=True,
+        )
+        db.add(row)
+        await db.flush()  # get row.id without committing; get_db dep commits at request end
+
+        # Update in-memory state AFTER flush — only reaches here if DB write succeeded
+        self._active = config
+        return row
+
+    def get_tool_definitions(self) -> list[dict]:
+        """Return the tools list from the active config.
+
+        Returns [] if no config is loaded (fresh deployment, no config uploaded yet).
+        """
+        if self._active is None:
+            return []
+        parsed = WorkflowConfigSchema.model_validate(self._active)
+        return [t.model_dump() for t in parsed.tools]
+
+    @property
+    def active_config(self) -> dict | None:
+        """Raw dict of the current active config, or None if none loaded."""
+        return self._active
+
+    async def load_from_db(self, db: AsyncSession) -> None:
+        """Load active config from DB. Called once at app startup."""
+        result = await db.execute(
+            select(WorkflowConfig).where(WorkflowConfig.is_active.is_(True)).limit(1)
+        )
+        row = result.scalar_one_or_none()
+        if row is not None:
+            self._active = json.loads(row.config_json)
+
+
+# Module-level singleton — imported by routers and lifespan
+workflow_registry = WorkflowRegistry()

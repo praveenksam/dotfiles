@@ -1,0 +1,81 @@
+import pytest
+from pydantic import ValidationError
+
+from app.config.workflow_registry import WorkflowRegistry
+
+VALID = {
+    "version": "1.0.0",
+    "workflow_id": "planning",
+    "tools": [{"name": "tool_a", "description": "desc", "parameters": {}}],
+    "agent_instructions": "Do the thing.",
+}
+
+
+def test_validate_schema_passes_valid_config():
+    registry = WorkflowRegistry()
+    parsed = registry.validate_schema(VALID)
+    assert parsed.version == "1.0.0"
+    assert len(parsed.tools) == 1
+
+
+def test_validate_schema_rejects_bad_semver():
+    registry = WorkflowRegistry()
+    with pytest.raises(ValidationError):
+        registry.validate_schema({**VALID, "version": "v1.0"})
+
+
+def test_validate_schema_rejects_missing_workflow_id():
+    registry = WorkflowRegistry()
+    bad = {k: v for k, v in VALID.items() if k != "workflow_id"}
+    with pytest.raises(ValidationError):
+        registry.validate_schema(bad)
+
+
+def test_validate_schema_rejects_missing_tools():
+    registry = WorkflowRegistry()
+    bad = {k: v for k, v in VALID.items() if k != "tools"}
+    with pytest.raises(ValidationError):
+        registry.validate_schema(bad)
+
+
+def test_validate_schema_rejects_blank_instructions():
+    registry = WorkflowRegistry()
+    with pytest.raises(ValidationError):
+        registry.validate_schema({**VALID, "agent_instructions": "  "})
+
+
+def test_get_tool_definitions_empty_when_no_config():
+    registry = WorkflowRegistry()
+    assert registry.get_tool_definitions() == []
+
+
+def test_get_tool_definitions_returns_tools_after_active_set():
+    registry = WorkflowRegistry()
+    registry._active = VALID  # Simulate loaded state directly
+    tools = registry.get_tool_definitions()
+    assert len(tools) == 1
+    assert tools[0]["name"] == "tool_a"
+
+
+def test_active_config_none_on_init():
+    registry = WorkflowRegistry()
+    assert registry.active_config is None
+
+
+def test_validate_schema_rejects_non_semver_with_letters():
+    registry = WorkflowRegistry()
+    with pytest.raises(ValidationError):
+        registry.validate_schema({**VALID, "version": "1.0.0-beta"})
+
+
+def test_validate_schema_accepts_multiple_tools():
+    registry = WorkflowRegistry()
+    config = {
+        **VALID,
+        "tools": [
+            {"name": "tool_a", "description": "desc a", "parameters": {}},
+            {"name": "tool_b", "description": "desc b", "parameters": {"type": "object"}},
+        ],
+    }
+    parsed = registry.validate_schema(config)
+    assert len(parsed.tools) == 2

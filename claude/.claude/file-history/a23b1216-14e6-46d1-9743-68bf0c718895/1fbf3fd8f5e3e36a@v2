@@ -1,0 +1,45 @@
+import re
+
+from pydantic import BaseModel, field_validator
+
+SEMVER_RE = re.compile(r"^\d+\.\d+\.\d+$")
+
+
+class ToolDefinition(BaseModel):
+    name: str
+    description: str
+    parameters: dict  # JSON Schema object; no deep validation in v1
+
+
+class DataPanelConfig(BaseModel):
+    worksheet_name: str
+    google_docs_url: str | None = None
+
+
+class WorkflowConfigSchema(BaseModel):
+    version: str
+    workflow_id: str
+    tools: list[ToolDefinition]
+    agent_instructions: str
+    data_panel: DataPanelConfig | None = None
+
+    @field_validator("version")
+    @classmethod
+    def version_is_semver(cls, v: str) -> str:
+        if not SEMVER_RE.match(v):
+            raise ValueError("version must be semver format, e.g. '1.0.0'")
+        return v
+
+    @field_validator("workflow_id")
+    @classmethod
+    def workflow_id_not_empty(cls, v: str) -> str:
+        if not v.strip():
+            raise ValueError("workflow_id must not be blank")
+        return v
+
+    @field_validator("agent_instructions")
+    @classmethod
+    def instructions_not_empty(cls, v: str) -> str:
+        if not v.strip():
+            raise ValueError("agent_instructions must not be blank")
+        return v

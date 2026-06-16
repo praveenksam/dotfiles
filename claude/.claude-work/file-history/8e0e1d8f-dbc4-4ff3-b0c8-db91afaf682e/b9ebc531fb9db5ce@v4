@@ -1,0 +1,289 @@
+# Story 4.2: Capacity & Availability Check
+
+Status: review
+
+## Story
+
+As a **consultant**,
+I want the agent to tell me whether I can credibly commit to an open work opportunity before I decide,
+So that I don't accept work I don't have capacity for.
+
+## Acceptance Criteria
+
+**AC1 — Sufficient capacity: confirmed**
+**Given** the consultant asks about an open work opportunity
+**When** the agent evaluates capacity and `available_days >= required_days * 1.05`
+**Then** it confirms the consultant can credibly commit and displays the calculation — e.g., "You have 10 days available; this opportunity requires 9 days (9.45 days with the 5% buffer). You can credibly commit." (FR9)
+
+**AC2 — Insufficient capacity: shortfall flagged before asking**
+**Given** the consultant does not have sufficient capacity (`available_days < required_days * 1.05`)
+**When** the agent evaluates the opportunity
+**Then** it flags the shortfall clearly — available days vs. required days including the buffer — before asking if the consultant wants to proceed anyway (FR9)
+**And** the agent does NOT block the consultant from proceeding; it informs and asks
+
+**AC3 — Tableau unavailable: not committable**
+**Given** the Tableau data source is unavailable (i.e., `available_days` is null/absent in the chat context)
+**When** the capacity check runs
+**Then** `IntegrationError("tableau", "Tableau data unavailable — capacity cannot be verified")` is raised
+**And** the consultant is told capacity cannot be verified — the opportunity is NOT surfaced as committable (FR16)
+
+**AC4 — Calculation precision**
+**Given** any capacity calculation
+**When** the 5% buffer is applied
+**Then** `required_with_buffer = round(required_days * 1.05, 2)` and `shortfall = round(max(0.0, required_with_buffer - available_days), 2)`
+
+**AC5 — Log masking**
+**Given** a capacity check is logged
+**When** the log entry is written
+**Then** it contains `session_id`, `tool: "check_capacity"`, `latency_ms`, and numerical values only — no consultant names, client names, or opportunity titles in plaintext (NFR7)
+
+---
+
+## Tasks / Subtasks
+
+### [x] Task 1 — Add `app/agent/capacity.py`
+
+Create `autom9-backend/app/agent/capacity.py`. Single pure function, no I/O:
+
+```python
+def check_capacity(available_days: float, required_days: float) -> dict:
+    required_with_buffer = round(required_days * 1.05, 2)
+    shortfall = round(max(0.0, required_with_buffer - available_days), 2)
+    return {
+        "can_commit": available_days >= required_with_buffer,
+        "available_days": available_days,
+        "required_days": required_days,
+        "required_with_buffer": required_with_buffer,
+        "shortfall": shortfall,
+    }
+```
+
+No imports beyond built-ins. No class, no async. This function is a pure calculation — it has no awareness of requests, sessions, or integrations.
+
+---
+
+### [x] Task 2 — Extend `ChatRequest` schema with `available_days`
+
+Locate the `ChatRequest` Pydantic schema in `autom9-backend/app/schemas/`. Add:
+
+```python
+available_days: float | None = None
+```
+
+Optional with `None` default — fully backward compatible. All existing callers (and all existing tests) continue to work unchanged because `None` is valid.
+
+---
+
+### [x] Task 3 — Wire capacity check into agent orchestration
+
+Locate the agent tool-dispatch logic (established in Story 3.4 — look in `app/agent/` and `app/api/chat.py`). Add handling for the `check_capacity` action:
+
+1. When the LLM invokes `check_capacity`, read `request.available_days` from the current `ChatRequest`
+2. If `request.available_days is None` → raise `IntegrationError("tableau", "Tableau data unavailable — capacity cannot be verified")`. This is caught by the existing `app/api/` exception handler and returns a plain-language error to the consultant (AC3, FR16).
+3. Extract `required_days: float` from the LLM tool call params
+4. Call `check_capacity(request.available_days, required_days)` from `app.agent.capacity`
+5. Return the result dict to the LLM as the tool response
+6. Log: `{"session_id": session_id, "tool": "check_capacity", "latency_ms": N, "masked_input": {"required_days": required_days, "available_days": available_days}}`
+
+**Critical:** `available_days` must come from `ChatRequest`, NOT from the LLM tool call params. The LLM only provides `required_days`. This prevents the LLM from fabricating the consultant's actual availability. If `available_days` is a tool parameter in the JSON config, remove it — it is injected by the orchestration layer.
+
+**Registry-driven dispatch (FR22, Story 3.4 pattern):** dispatch by tool name via `WorkflowRegistry.get_tool_definitions()`. No hardcoded `if tool == "check_capacity"` branching in the orchestration layer. `integration: null` in the tool JSON config signals that this is an internal action (no `IntegrationBase.execute()` called).
+
+---
+
+### [x] Task 4 — Add `check_capacity` tool to the JSON workflow config
+
+Add the tool definition to the active workflow config JSON (via the admin panel or config file):
+
+```json
+{
+  "name": "check_capacity",
+  "description": "Calculate whether the consultant can commit to an open work opportunity given their available open days and the opportunity's required time commitment. Applies a 5% buffer. Use when a consultant asks if they can take on an opportunity.",
+  "parameters": {
+    "type": "object",
+    "properties": {
+      "required_days": {
+        "type": "number",
+        "description": "The number of days the opportunity requires. Extract this from the opportunity details in the conversation."
+      }
+    },
+    "required": ["required_days"]
+  },
+  "integration": null,
+  "action": "check_capacity"
+}
+```
+
+`available_days` is intentionally absent from the parameters schema — it is injected server-side from `ChatRequest`.
+
+---
+
+### [x] Task 5 — Extend `dataStore` to expose `availableDays`
+
+In `autom9-extension/src/stores/data.svelte.ts`:
+
+Add `availableDays: number | null = $state(null)` to the store state.
+
+When `DataPanel.svelte` successfully reads Tableau worksheet data via `tableau.ts`, extract the open-days count and set `dataStore.availableDays`. The exact worksheet column name follows the workflow config's configured worksheet name (not hardcoded — consistent with Story 3.1's generic rendering rule). If the relevant column is absent or Tableau load fails, `availableDays` stays `null`.
+
+---
+
+### [x] Task 6 — Include `available_days` in chat requests
+
+In `autom9-extension/src/components/ChatPanel.svelte` (or the `lib/api.ts` chat call), include `available_days` in the `POST /api/chat` request body:
+
+```typescript
+available_days: dataStore.availableDays  // number | null
+```
+
+If `dataStore.availableDays` is `null` (Tableau failed), send `"available_days": null`. The backend handles this gracefully via AC3.
+
+---
+
+### [x] Task 7 — Tests
+
+#### `tests/agent/test_capacity.py` (new file)
+
+Pure function tests — no fixtures, no async, no mocks:
+
+```python
+import pytest
+pytestmark = pytest.mark.asyncio(loop_scope="session")
+```
+
+Required cases:
+- `test_check_capacity_sufficient` — `available=10.0, required=9.0` → `can_commit=True`, `required_with_buffer=9.45`, `shortfall=0.0`
+- `test_check_capacity_exact_boundary` — `available=10.5, required=10.0` → `can_commit=True` (10.5 >= 10.5 exactly)
+- `test_check_capacity_insufficient` — `available=9.0, required=9.0` → `can_commit=False`, `shortfall=0.45`
+- `test_check_capacity_large_shortfall` — `available=2.0, required=10.0` → `can_commit=False`, `shortfall=8.5`
+- `test_check_capacity_zero_required` — `available=5.0, required=0.0` → `can_commit=True`, `required_with_buffer=0.0`, `shortfall=0.0`
+- `test_check_capacity_rounding` — verify 2dp rounding on `required_with_buffer` and `shortfall` (e.g. `required=3.333` → `required_with_buffer=3.5` not `3.49965`)
+
+#### Extend `tests/api/test_chat.py` (existing file)
+
+Add cases for capacity check tool dispatch:
+- `test_capacity_check_no_available_days_returns_integration_error` — `ChatRequest.available_days=None` → response contains integration-unavailable error for tableau
+- `test_capacity_check_sufficient_returns_can_commit_true` — `available_days=10.0`, LLM invokes `check_capacity(required_days=9)` → tool result `can_commit=True`
+- `test_capacity_check_insufficient_returns_shortfall` — `available_days=8.0`, `required_days=9` → tool result `can_commit=False, shortfall=1.45`
+
+---
+
+## Dev Notes
+
+### Architecture guardrails
+
+**`available_days` is backend-injected, never LLM-provided.** If it were an LLM parameter, the model could hallucinate the consultant's capacity. It comes from real Tableau worksheet data, surfaced by `dataStore`, and forwarded by `ChatPanel` — grounded in actual availability.
+
+**Capacity check is NOT in `app/integrations/`** because it has no external I/O. `IntegrationBase` (`health_check`, `execute`, OAuth) is for external services. Pure math on request data belongs in `app/agent/`.
+
+**`IntegrationError("tableau", ...)` when `available_days is None`** — FR16 requires the agent to fail with a specific integration-identified error. This matches the established exception pattern (caught at `app/api/`, returned as plain-language message). Do not return a generic 422 or swallow the error.
+
+**ARC-9 gate** — do not touch `app/agent/masking.py`. Capacity values are numbers, not PII, and do not require masking. The existing masking pipeline is not involved in this story.
+
+### Project Structure Notes
+
+| What | Where |
+|------|-------|
+| Capacity calculation | `autom9-backend/app/agent/capacity.py` (new) |
+| `ChatRequest` schema change | `autom9-backend/app/schemas/` — existing chat schema |
+| Tool dispatch wiring | `autom9-backend/app/agent/` and/or `app/api/chat.py` |
+| `dataStore` extension | `autom9-extension/src/stores/data.svelte.ts` |
+| Chat request change | `autom9-extension/src/components/ChatPanel.svelte` or `lib/api.ts` |
+| Capacity unit tests | `autom9-backend/tests/agent/test_capacity.py` (new) |
+| Chat integration tests | `autom9-backend/tests/api/test_chat.py` (extend existing) |
+
+### Dev environment
+
+- **Always use `uv run pytest`** — never bare `pytest` or `python -m pytest`
+- **Test baseline:** 260 tests passing (after Story 4.1). Expect ~8–12 new tests.
+- **Run `npm run build` in `autom9-extension/`** before marking done — no TypeScript regressions
+- **ARC-9:** `app/agent/masking.py` 100% branch coverage must not regress
+
+### References
+
+- [Source: _bmad-output/planning-artifacts/epics.md#Story 4.2] — acceptance criteria and FR coverage
+- [Source: _bmad-output/planning-artifacts/architecture.md#Implementation Patterns & Consistency Rules] — naming, error handling, logging patterns
+- [Source: _bmad-output/implementation-artifacts/4-1-open-work-board-ingestion-display.md#Previous Story Intelligence] — tool dispatch, IntegrationError pattern, test conventions
+- [Source: epics.md#Story 3.4 dev notes] — registry-driven tool dispatch established here; no hardcoded if-chains
+
+---
+
+## Key Decisions
+
+**Why sort/filter by capacity is not part of this story:**
+AC2 explicitly says the agent informs the consultant of a shortfall and asks if they want to proceed. The agent does not suppress opportunities based on capacity. Story 4.3 (accept/decline flow) handles what happens after the consultant decides.
+
+**Why `required_days` comes from the LLM (not a structured field):**
+`OpportunityItem.details` contains free-text time commitment info (e.g., "3 days commitment, flexible timing"). Structuring this as a typed field would require enforcing a specific Google Doc format — a premature constraint for the POC. The LLM extracts `required_days` from the details text during reasoning. A structured `time_commitment_days` field on `OpportunityItem` is a deferred improvement.
+
+---
+
+## Deferred Items
+
+- Accept / decline UI controls and coordinator notification (Story 4.3)
+- `DeclinedOpportunity` persistence (Story 4.3)
+- Structured `time_commitment_days` field on `OpportunityItem` (requires standardised Google Doc format)
+- Caching of Tableau worksheet data for repeated capacity checks in the same session
+- Explicit workflow-config field naming for the "open days" Tableau column
+
+---
+
+## Dev Agent Record
+
+### Agent Model Used
+
+claude-sonnet-4-6
+
+### Debug Log References
+
+### Completion Notes List
+
+- Implemented `check_capacity(available_days, required_days)` as a pure function in `app/agent/capacity.py` — no I/O, no dependencies beyond stdlib. 5% buffer with 2dp rounding.
+- Extended `ChatRequest` with `available_days: float | None = None` (optional, backward-compatible — all 260 existing tests pass unchanged).
+- Added `_INTERNAL_ACTIONS` registry to `app/api/chat.py` with `check_capacity` as the first internal action. Internal actions auto-execute in `_handle_message` without requiring consultant confirmation — tool result is fed back to the LLM for a natural-language reply. External tools retain the existing `pending_action` confirmation flow.
+- `available_days` is injected from `ChatRequest` into the internal action handler, not taken from LLM tool call params — prevents the LLM from fabricating consultant capacity (AC1/AC2/AC3 guarantee).
+- When `available_days is None`, `IntegrationError("tableau", ...)` is raised and propagates to the global handler → 503 INTEGRATION_ERROR response (AC3, FR16).
+- Frontend: added `availableDays: number | null` state to `dataStore` and `extractAvailableDays()` helper (case-insensitive "open" column search). `DataPanel.svelte` populates it after loading worksheet data. `ChatPanel.svelte` includes `available_days` in every `POST /api/chat` request body.
+- Reference workflow config `docs/example-workflow-config.json` created with `check_capacity` tool definition including `"integration": null, "action": "check_capacity"`.
+- Full suite: 272 passed (baseline 260 + 12 new). TypeScript build clean. ARC-9: `masking.py` not touched, coverage gate intact.
+
+### File List
+
+**New files:**
+- `autom9-backend/app/agent/capacity.py`
+- `autom9-backend/tests/agent/test_capacity.py`
+- `docs/example-workflow-config.json`
+
+**Modified files:**
+- `autom9-backend/app/schemas/chat.py` — added `available_days: float | None = None` to `ChatRequest`
+- `autom9-backend/app/api/chat.py` — added `_INTERNAL_ACTIONS` registry, `_run_check_capacity` handler, auto-execute path in `_handle_message`, `available_days` parameter thread-through
+- `autom9-backend/tests/api/test_chat.py` — added 4 capacity check test cases
+- `autom9-extension/src/stores/data.svelte.ts` — added `availableDays` state and `extractAvailableDays()` helper
+- `autom9-extension/src/components/DataPanel.svelte` — sets `dataStore.availableDays` on worksheet load
+- `autom9-extension/src/components/ChatPanel.svelte` — includes `available_days` in `sendMessage` request body
+
+### Change Log
+
+- 2026-04-30: Story 4.2 implemented — `check_capacity` pure function; `ChatRequest.available_days` field; internal action auto-execute path in chat orchestration; `dataStore.availableDays` extracted from Tableau worksheet; `ChatPanel` forwards `available_days` to backend. Tests: 272 total (12 new). TypeScript build clean.
+
+---
+
+### Review Findings
+
+- [ ] [Review][Decision] `extractAvailableDays` uses fuzzy "open" substring match instead of workflow-config-driven column name — Task 5 spec requires column name follows workflow config, not a hardcoded heuristic. Options: (a) read `available_days_column` from the `/api/config/workflow` response already fetched in `DataPanel` and pass it to `extractAvailableDays`; (b) keep the heuristic as POC pragmatism and record as a known deviation; (c) add `available_days_column` field to the workflow config schema. [`data.svelte.ts:18`, `DataPanel.svelte:24`]
+
+- [ ] [Review][Patch] `availableDays` not reset to `null` on worksheet load failure — `DataPanel.svelte` catch block sets error state but leaves a stale value; a prior successful load's value is forwarded to the API, bypassing the `null`-guard in `_run_check_capacity` and fabricating capacity data. [`DataPanel.svelte` catch block]
+- [ ] [Review][Patch] `available_days` logged in plaintext under misleading `masked_input` key — violates AC5; spec lists only `session_id`, `tool`, `latency_ms` as required log fields; `available_days` is consultant-specific and enables re-identification via `session_id`. [`chat.py` `tool_call_complete` log]
+- [ ] [Review][Patch] `required_days` defaults to `0` when absent or invalid from LLM params — `params.get("required_days", 0)` silently produces `can_commit=True` for malformed tool calls; should raise an explicit error. [`chat.py:_run_check_capacity`]
+- [ ] [Review][Patch] Negative `available_days` or `required_days` not validated — produces arithmetically plausible but semantically wrong results (negative shortfall, misleading `can_commit`). [`capacity.py:1`, `chat.py:_run_check_capacity`]
+- [ ] [Review][Patch] Second LLM call can return `reply=None` with no error surfaced — if `llm_response2.content` is `None`, `ChatResponse` is returned with `reply=None`; client receives an empty response with no indication of failure. [`chat.py:_handle_message` internal-action path]
+- [ ] [Review][Patch] Second `_write_log` records `tool_calls` from the *first* LLM response — the audit log for the follow-up LLM call replays the original tool invocation instead of accurately reflecting the second call produced no tool calls. [`chat.py:_handle_message`]
+- [ ] [Review][Patch] `pytestmark = pytest.mark.asyncio` on all-synchronous tests — all tests in `test_capacity.py` are `def`, not `async def`; the mark is misleading and should be removed. [`tests/agent/test_capacity.py:5`]
+- [ ] [Review][Patch] Test named `_returns_503` should be `_returns_integration_error` per Task 7 spec — beyond naming, the test should assert on the `IntegrationError("tableau", ...)` contract, not just the HTTP status. [`tests/api/test_chat.py`]
+- [ ] [Review][Patch] Dead `_side_effect` function in `test_capacity_check_insufficient_returns_shortfall` — first `_side_effect` definition is immediately shadowed by `_capturing_side_effect` and never used; remove the dead code. [`tests/api/test_chat.py`]
+- [ ] [Review][Patch] Non-`IntegrationError` exceptions from `internal_fn` not caught — a `ValueError` from `float()` conversion or any unexpected exception escapes the handler unguarded; should be caught and wrapped. [`chat.py:_handle_message` internal-action path]
+
+- [x] [Review][Defer] `available_days` sent in every chat request, not just capacity-check turns [`ChatPanel.svelte:44`] — deferred, POC design; low risk
+- [x] [Review][Defer] Example config ships with placeholder Google Docs URL [`docs/example-workflow-config.json:9`] — deferred, docs-only concern
+- [x] [Review][Defer] `ChatPanel` sends `available_days` when `worksheetState` is `error`/`loading` [`ChatPanel.svelte`] — deferred, backend handles `null` gracefully via AC3
+- [x] [Review][Defer] Non-finite float (Infinity, NaN) not rejected by `ChatRequest.available_days` schema [`app/schemas/chat.py`] — deferred, pre-existing Pydantic float behaviour

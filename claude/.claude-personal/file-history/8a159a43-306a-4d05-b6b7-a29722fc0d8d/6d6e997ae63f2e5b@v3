@@ -1,0 +1,302 @@
+import logging
+
+import pytest
+from httpx import AsyncClient
+
+pytestmark = pytest.mark.asyncio(loop_scope="session")
+
+SESSION_HEADERS = {"X-Autom9-Session": "test-session-id"}
+
+_BASE_CONFIG = {
+    "version": "1.0.0",
+    "workflow_id": "test",
+    "tools": [],
+    "agent_instructions": "test",
+}
+
+_OPEN_WORK_URL = "https://docs.google.com/document/d/abc123/edit"
+
+
+# ---------------------------------------------------------------------------
+# GET /api/data/open-work — no config loaded
+# ---------------------------------------------------------------------------
+
+
+async def test_get_open_work_no_config_returns_404(client: AsyncClient):
+    """No workflow config loaded → 404."""
+    response = await client.get("/api/data/open-work", headers=SESSION_HEADERS)
+    assert response.status_code == 404
+
+
+# ---------------------------------------------------------------------------
+# GET /api/data/open-work — config without open_work_board
+# ---------------------------------------------------------------------------
+
+
+async def test_get_open_work_no_open_work_board_returns_404(client: AsyncClient, monkeypatch):
+    import app.api.data as data_module
+    from app.config.workflow_registry import WorkflowRegistry
+
+    registry = WorkflowRegistry()
+    registry._active = {**_BASE_CONFIG}  # no open_work_board key
+    monkeypatch.setattr(data_module, "workflow_registry", registry)
+
+    response = await client.get("/api/data/open-work", headers=SESSION_HEADERS)
+    assert response.status_code == 404
+
+
+# ---------------------------------------------------------------------------
+# GET /api/data/open-work — config without google_docs_url
+# ---------------------------------------------------------------------------
+
+
+async def test_get_open_work_no_google_docs_url_returns_404(client: AsyncClient, monkeypatch):
+    import app.api.data as data_module
+    from app.config.workflow_registry import WorkflowRegistry
+
+    registry = WorkflowRegistry()
+    registry._active = {
+        **_BASE_CONFIG,
+        "open_work_board": {},  # missing google_docs_url
+    }
+    monkeypatch.setattr(data_module, "workflow_registry", registry)
+
+    response = await client.get("/api/data/open-work", headers=SESSION_HEADERS)
+    assert response.status_code == 404
+
+
+# ---------------------------------------------------------------------------
+# GET /api/data/open-work — integration raises IntegrationError → 503
+# ---------------------------------------------------------------------------
+
+
+async def test_get_open_work_integration_unavailable_returns_503(client: AsyncClient, monkeypatch):
+    import app.api.data as data_module
+    from app.config.workflow_registry import WorkflowRegistry
+    from app.core.exceptions import IntegrationError
+
+    registry = WorkflowRegistry()
+    registry._active = {
+        **_BASE_CONFIG,
+        "open_work_board": {"google_docs_url": _OPEN_WORK_URL},
+    }
+    monkeypatch.setattr(data_module, "workflow_registry", registry)
+
+    class _FailingDocs:
+        async def execute(self, action: str, params: dict) -> dict:
+            raise IntegrationError("google_docs", "Google Docs not configured")
+
+    monkeypatch.setattr(data_module, "_google_docs", _FailingDocs())
+
+    response = await client.get("/api/data/open-work", headers=SESSION_HEADERS)
+    assert response.status_code == 503
+
+
+# ---------------------------------------------------------------------------
+# GET /api/data/open-work — happy path: sorted billable first
+# ---------------------------------------------------------------------------
+
+
+async def test_get_open_work_returns_opportunities_sorted_billable_first(client: AsyncClient, monkeypatch):
+    import app.api.data as data_module
+    from app.config.workflow_registry import WorkflowRegistry
+
+    registry = WorkflowRegistry()
+    registry._active = {
+        **_BASE_CONFIG,
+        "open_work_board": {"google_docs_url": _OPEN_WORK_URL},
+    }
+    monkeypatch.setattr(data_module, "workflow_registry", registry)
+
+    class _StubDocs:
+        async def execute(self, action: str, params: dict) -> dict:
+            return {
+                "opportunities": [
+                    {"title": "Internal Training", "type": "internal", "details": "Internal Training"},
+                    {"title": "Project Alpha", "type": "billable", "details": "Project Alpha"},
+                    {"title": "Project Beta", "type": "billable", "details": "Project Beta"},
+                    {"title": "Admin Work", "type": "internal", "details": "Admin Work"},
+                ]
+            }
+
+    monkeypatch.setattr(data_module, "_google_docs", _StubDocs())
+
+    response = await client.get("/api/data/open-work", headers=SESSION_HEADERS)
+    assert response.status_code == 200
+    body = response.json()
+    items = body["data"]
+    assert len(items) == 4
+
+    # Verify billable items come before internal items
+    types = [item["type"] for item in items]
+    last_billable = max((i for i, t in enumerate(types) if t == "billable"), default=-1)
+    first_internal = min((i for i, t in enumerate(types) if t == "internal"), default=len(types))
+    assert last_billable < first_internal
+
+
+async def test_get_open_work_response_shape(client: AsyncClient, monkeypatch):
+    """Response matches {data: [...], meta: {request_id: str}} envelope."""
+    import app.api.data as data_module
+    from app.config.workflow_registry import WorkflowRegistry
+
+    registry = WorkflowRegistry()
+    registry._active = {
+        **_BASE_CONFIG,
+        "open_work_board": {"google_docs_url": _OPEN_WORK_URL},
+    }
+    monkeypatch.setattr(data_module, "workflow_registry", registry)
+
+    class _StubDocs:
+        async def execute(self, action: str, params: dict) -> dict:
+            return {
+                "opportunities": [
+                    {"title": "Opp A", "type": "billable", "details": "Opp A"},
+                ]
+            }
+
+    monkeypatch.setattr(data_module, "_google_docs", _StubDocs())
+
+    response = await client.get("/api/data/open-work", headers=SESSION_HEADERS)
+    assert response.status_code == 200
+    body = response.json()
+    assert "data" in body
+    assert "meta" in body
+    assert "request_id" in body["meta"]
+    item = body["data"][0]
+    assert "title" in item
+    assert "type" in item
+    assert "details" in item
+
+
+async def test_get_open_work_empty_board_returns_empty_list(client: AsyncClient, monkeypatch):
+    import app.api.data as data_module
+    from app.config.workflow_registry import WorkflowRegistry
+
+    registry = WorkflowRegistry()
+    registry._active = {
+        **_BASE_CONFIG,
+        "open_work_board": {"google_docs_url": _OPEN_WORK_URL},
+    }
+    monkeypatch.setattr(data_module, "workflow_registry", registry)
+
+    class _StubDocs:
+        async def execute(self, action: str, params: dict) -> dict:
+            return {"opportunities": []}
+
+    monkeypatch.setattr(data_module, "_google_docs", _StubDocs())
+
+    response = await client.get("/api/data/open-work", headers=SESSION_HEADERS)
+    assert response.status_code == 200
+    assert response.json()["data"] == []
+
+
+async def test_get_open_work_session_header_forwarded(client: AsyncClient, monkeypatch):
+    """The session_id from X-Autom9-Session header is available for logging (no 4xx/5xx on missing)."""
+    import app.api.data as data_module
+    from app.config.workflow_registry import WorkflowRegistry
+
+    registry = WorkflowRegistry()
+    registry._active = {
+        **_BASE_CONFIG,
+        "open_work_board": {"google_docs_url": _OPEN_WORK_URL},
+    }
+    monkeypatch.setattr(data_module, "workflow_registry", registry)
+
+    class _StubDocs:
+        async def execute(self, action: str, params: dict) -> dict:
+            return {"opportunities": []}
+
+    monkeypatch.setattr(data_module, "_google_docs", _StubDocs())
+
+    # With session header
+    response = await client.get("/api/data/open-work", headers=SESSION_HEADERS)
+    assert response.status_code == 200
+
+    # Without session header — still works (session_id defaults to "unknown")
+    response_no_header = await client.get("/api/data/open-work")
+    assert response_no_header.status_code == 200
+
+
+# ---------------------------------------------------------------------------
+# AC8 — log assertion: session_id + integration emitted, no opportunity titles
+# ---------------------------------------------------------------------------
+
+
+async def test_get_open_work_logs_session_and_integration_only(
+    client: AsyncClient, monkeypatch, caplog
+):
+    """AC8: log contains session_id + integration='google_docs', no opportunity titles."""
+    import app.api.data as data_module
+    from app.config.workflow_registry import WorkflowRegistry
+
+    registry = WorkflowRegistry()
+    registry._active = {
+        **_BASE_CONFIG,
+        "open_work_board": {"google_docs_url": _OPEN_WORK_URL},
+    }
+    monkeypatch.setattr(data_module, "workflow_registry", registry)
+
+    secret_title = "PII Project Alpha SecretClient"
+
+    class _StubDocs:
+        async def execute(self, action: str, params: dict) -> dict:
+            return {
+                "opportunities": [
+                    {"title": secret_title, "type": "billable", "details": secret_title},
+                ]
+            }
+
+    monkeypatch.setattr(data_module, "_google_docs", _StubDocs())
+
+    with caplog.at_level(logging.INFO, logger="app.api.data"):
+        response = await client.get("/api/data/open-work", headers=SESSION_HEADERS)
+    assert response.status_code == 200
+
+    fetch_records = [r for r in caplog.records if r.message == "data_open_work_fetch"]
+    assert fetch_records, "expected a data_open_work_fetch log record"
+    record = fetch_records[0]
+    assert getattr(record, "session_id", None) == "test-session-id"
+    assert getattr(record, "integration", None) == "google_docs"
+
+    for r in caplog.records:
+        assert secret_title not in r.getMessage()
+        for value in vars(r).values():
+            if isinstance(value, str):
+                assert secret_title not in value
+
+
+# ---------------------------------------------------------------------------
+# Integration returns malformed type — endpoint must coerce, not 500
+# ---------------------------------------------------------------------------
+
+
+async def test_get_open_work_unknown_type_coerced_to_internal(client: AsyncClient, monkeypatch):
+    """A malformed type from the integration must be coerced (not 500 the endpoint)."""
+    import app.api.data as data_module
+    from app.config.workflow_registry import WorkflowRegistry
+
+    registry = WorkflowRegistry()
+    registry._active = {
+        **_BASE_CONFIG,
+        "open_work_board": {"google_docs_url": _OPEN_WORK_URL},
+    }
+    monkeypatch.setattr(data_module, "workflow_registry", registry)
+
+    class _StubDocs:
+        async def execute(self, action: str, params: dict) -> dict:
+            return {
+                "opportunities": [
+                    {"title": "Weird One", "type": "prospective", "details": ""},
+                    {"title": "Null One", "type": None, "details": ""},
+                ]
+            }
+
+    monkeypatch.setattr(data_module, "_google_docs", _StubDocs())
+
+    response = await client.get("/api/data/open-work", headers=SESSION_HEADERS)
+    assert response.status_code == 200
+    items = response.json()["data"]
+    assert {item["title"]: item["type"] for item in items} == {
+        "Weird One": "internal",
+        "Null One": "internal",
+    }

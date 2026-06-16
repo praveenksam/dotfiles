@@ -1,0 +1,93 @@
+<script lang="ts">
+  import { onMount } from 'svelte';
+  import { initializeExtension, getTableauUserId } from './lib/tableau';
+  import { apiFetch, ApiError } from './lib/api';
+  import { sessionStore } from './stores/session.svelte';
+  import { statusStore } from './stores/status.svelte';
+  import StatusBar from './components/StatusBar.svelte';
+
+  type AppStatus = 'loading' | 'ready' | 'error';
+
+  let appStatus = $state<AppStatus>('loading');
+  let errorMessage = $state('');
+
+  onMount(async () => {
+    try {
+      // Step 1: Initialize Tableau runtime
+      await initializeExtension();
+
+      // Step 2: Get Tableau user identity
+      const tableauUserId = getTableauUserId();
+      sessionStore.tableauUserId = tableauUserId;
+
+      // Step 3: Create backend session
+      const sessionResponse = await apiFetch<{
+        data: { session_id: string; started_at: string };
+      }>('/api/sessions', {
+        method: 'POST',
+        body: JSON.stringify({ tableau_user_id: tableauUserId }),
+      });
+      sessionStore.sessionId = sessionResponse.data.session_id;
+
+      // Step 4: Fetch integration statuses
+      statusStore.loading = true;
+      const sessionHeaders: Record<string, string> = {};
+      if (sessionStore.sessionId) {
+        sessionHeaders['X-Autom9-Session'] = sessionStore.sessionId;
+      }
+      const statusResponse = await apiFetch<{
+        data: { integrations: Array<{ name: string; status: string; latency_ms: number | null; error: string | null }> };
+      }>('/api/status', {
+        headers: sessionHeaders,
+      });
+
+      statusStore.integrations = statusResponse.data.integrations.map((i) => ({
+        name: i.name,
+        status: i.status as 'healthy' | 'unavailable',
+        latency_ms: i.latency_ms,
+        error: i.error,
+      }));
+      statusStore.loading = false;
+
+      appStatus = 'ready';
+    } catch (err) {
+      statusStore.loading = false;
+      const msg = err instanceof Error ? err.message : 'Extension failed to initialize';
+      errorMessage = msg;
+      statusStore.error = msg;
+      appStatus = 'error';
+    }
+  });
+</script>
+
+{#if appStatus === 'loading'}
+  <div class="autom9-loading">
+    <p>Loading autom9…</p>
+  </div>
+{:else if appStatus === 'error'}
+  <div class="autom9-error">
+    <p><strong>autom9 failed to load</strong></p>
+    <p>{errorMessage}</p>
+  </div>
+{:else}
+  <div class="autom9-shell">
+    <StatusBar />
+    <!-- Chat panel and data panel added in Epic 3 stories -->
+  </div>
+{/if}
+
+<style>
+  .autom9-loading,
+  .autom9-error,
+  .autom9-shell {
+    font-family: sans-serif;
+    min-height: 100vh;
+  }
+  .autom9-loading {
+    padding: 1rem;
+  }
+  .autom9-error {
+    color: #c00;
+    padding: 1rem;
+  }
+</style>

@@ -1,0 +1,506 @@
+import json
+
+import pytest
+from httpx import AsyncClient
+from unittest.mock import AsyncMock
+
+from app.agent.provider import LLMResponse
+
+pytestmark = pytest.mark.asyncio(loop_scope="session")
+
+SESSION_HEADERS = {"X-Autom9-Session": "00000000-0000-0000-0000-000000000001"}
+
+_BASE_CONFIG = {
+    "version": "1.0.0",
+    "workflow_id": "planning",
+    "tools": [],
+    "agent_instructions": "You are a planning assistant.",
+}
+
+
+# ---------------------------------------------------------------------------
+# No active config → 404
+# ---------------------------------------------------------------------------
+
+
+async def test_chat_no_config_returns_404(client: AsyncClient, monkeypatch):
+    import app.api.chat as chat_module
+    from app.config.workflow_registry import WorkflowRegistry
+
+    registry = WorkflowRegistry()
+    monkeypatch.setattr(chat_module, "workflow_registry", registry)
+
+    response = await client.post("/api/chat", json={"message": "hello"}, headers=SESSION_HEADERS)
+    assert response.status_code == 404
+
+
+# ---------------------------------------------------------------------------
+# Provider not configured → 503
+# ---------------------------------------------------------------------------
+
+
+async def test_chat_no_provider_returns_503(client: AsyncClient, monkeypatch):
+    import app.api.chat as chat_module
+    from app.config.workflow_registry import WorkflowRegistry
+    from app.core.exceptions import ProviderError
+
+    registry = WorkflowRegistry()
+    registry._active = _BASE_CONFIG
+    monkeypatch.setattr(chat_module, "workflow_registry", registry)
+
+    async def _fail_provider(db):
+        raise ProviderError("none", "No active LLM provider configured.")
+
+    monkeypatch.setattr(chat_module, "get_provider", _fail_provider)
+
+    response = await client.post("/api/chat", json={"message": "hello"}, headers=SESSION_HEADERS)
+    assert response.status_code == 503
+    body = response.json()
+    assert body["error"]["code"] == "PROVIDER_ERROR"
+
+
+# ---------------------------------------------------------------------------
+# LLM call raises ProviderError → 503
+# ---------------------------------------------------------------------------
+
+
+async def test_chat_llm_error_returns_503(client: AsyncClient, monkeypatch):
+    import app.api.chat as chat_module
+    from app.config.workflow_registry import WorkflowRegistry
+    from app.core.exceptions import ProviderError
+
+    registry = WorkflowRegistry()
+    registry._active = _BASE_CONFIG
+    monkeypatch.setattr(chat_module, "workflow_registry", registry)
+
+    mock_provider = AsyncMock()
+    mock_provider.complete.side_effect = ProviderError("openai", "Rate limit exceeded")
+    monkeypatch.setattr(chat_module, "get_provider", AsyncMock(return_value=mock_provider))
+
+    response = await client.post("/api/chat", json={"message": "hello"}, headers=SESSION_HEADERS)
+    assert response.status_code == 503
+
+
+# ---------------------------------------------------------------------------
+# Happy path — returns reply
+# ---------------------------------------------------------------------------
+
+
+async def test_chat_returns_reply(client: AsyncClient, monkeypatch):
+    import app.api.chat as chat_module
+    from app.config.workflow_registry import WorkflowRegistry
+
+    registry = WorkflowRegistry()
+    registry._active = _BASE_CONFIG
+    monkeypatch.setattr(chat_module, "workflow_registry", registry)
+
+    mock_provider = AsyncMock()
+    mock_provider.complete.return_value = LLMResponse(
+        content="I can help with that.",
+        tool_calls=[],
+        finish_reason="stop",
+    )
+    monkeypatch.setattr(chat_module, "get_provider", AsyncMock(return_value=mock_provider))
+
+    response = await client.post(
+        "/api/chat",
+        json={"message": "What are my open days?"},
+        headers=SESSION_HEADERS,
+    )
+    assert response.status_code == 200
+    body = response.json()
+    assert body["data"]["reply"] == "I can help with that."
+    assert "request_id" in body["meta"]
+
+
+# ---------------------------------------------------------------------------
+# Multi-turn — history included in LLM call
+# ---------------------------------------------------------------------------
+
+
+async def test_chat_history_included_in_llm_call(client: AsyncClient, monkeypatch):
+    import app.api.chat as chat_module
+    from app.config.workflow_registry import WorkflowRegistry
+
+    registry = WorkflowRegistry()
+    registry._active = _BASE_CONFIG
+    monkeypatch.setattr(chat_module, "workflow_registry", registry)
+
+    captured: dict = {}
+
+    async def _capture_complete(messages, tools):
+        captured["messages"] = messages
+        return LLMResponse(content="Got it.", tool_calls=[], finish_reason="stop")
+
+    mock_provider = AsyncMock()
+    mock_provider.complete.side_effect = _capture_complete
+    monkeypatch.setattr(chat_module, "get_provider", AsyncMock(return_value=mock_provider))
+
+    response = await client.post(
+        "/api/chat",
+        json={
+            "message": "Follow-up question",
+            "history": [
+                {"role": "user", "content": "First message"},
+                {"role": "assistant", "content": "First reply"},
+            ],
+        },
+        headers=SESSION_HEADERS,
+    )
+    assert response.status_code == 200
+
+    msgs = captured["messages"]
+    # system + 2 history turns + new user turn = 4
+    assert len(msgs) == 4
+    assert msgs[0]["role"] == "system"
+    assert msgs[1]["content"] == "First message"
+    assert msgs[2]["content"] == "First reply"
+    assert msgs[3]["content"] == "Follow-up question"
+
+
+# ---------------------------------------------------------------------------
+# No session header — chat still works, logging skipped
+# ---------------------------------------------------------------------------
+
+
+async def test_chat_no_session_header_still_succeeds(client: AsyncClient, monkeypatch):
+    import app.api.chat as chat_module
+    from app.config.workflow_registry import WorkflowRegistry
+
+    registry = WorkflowRegistry()
+    registry._active = _BASE_CONFIG
+    monkeypatch.setattr(chat_module, "workflow_registry", registry)
+
+    mock_provider = AsyncMock()
+    mock_provider.complete.return_value = LLMResponse(
+        content="Hello!", tool_calls=[], finish_reason="stop"
+    )
+    monkeypatch.setattr(chat_module, "get_provider", AsyncMock(return_value=mock_provider))
+
+    response = await client.post("/api/chat", json={"message": "Hi"})
+    assert response.status_code == 200
+    assert response.json()["data"]["reply"] == "Hello!"
+
+
+# ---------------------------------------------------------------------------
+# Capacity check — internal action auto-executes without confirmation
+# ---------------------------------------------------------------------------
+
+_CONFIG_WITH_CAPACITY_TOOL = {
+    "version": "1.0.0",
+    "workflow_id": "planning",
+    "tools": [
+        {
+            "name": "check_capacity",
+            "description": "Check if consultant can commit to an opportunity.",
+            "parameters": {
+                "type": "object",
+                "properties": {"required_days": {"type": "number"}},
+                "required": ["required_days"],
+            },
+            "integration": None,
+            "action": "check_capacity",
+        }
+    ],
+    "agent_instructions": "You are a planning assistant.",
+}
+
+
+async def test_capacity_check_no_available_days_returns_integration_error(client: AsyncClient, monkeypatch):
+    """When available_days is None, IntegrationError("tableau", ...) raises → 503."""
+    import app.api.chat as chat_module
+    from app.config.workflow_registry import WorkflowRegistry
+
+    registry = WorkflowRegistry()
+    registry._active = _CONFIG_WITH_CAPACITY_TOOL
+    monkeypatch.setattr(chat_module, "workflow_registry", registry)
+
+    mock_provider = AsyncMock()
+    mock_provider.complete.return_value = LLMResponse(
+        content="",
+        tool_calls=[{"id": "1", "name": "check_capacity", "arguments": {"required_days": 5}}],
+        finish_reason="tool_calls",
+    )
+    monkeypatch.setattr(chat_module, "get_provider", AsyncMock(return_value=mock_provider))
+
+    response = await client.post(
+        "/api/chat",
+        json={"message": "Can I take this project?", "available_days": None},
+        headers=SESSION_HEADERS,
+    )
+    assert response.status_code == 503
+    body = response.json()
+    assert body["error"]["code"] == "INTEGRATION_ERROR"
+    assert body["error"]["integration"] == "tableau"
+
+
+async def test_capacity_check_sufficient_returns_can_commit_true(client: AsyncClient, monkeypatch):
+    """With 10 available days and 9 required, agent gets can_commit=True and replies."""
+    import app.api.chat as chat_module
+    from app.config.workflow_registry import WorkflowRegistry
+
+    registry = WorkflowRegistry()
+    registry._active = _CONFIG_WITH_CAPACITY_TOOL
+    monkeypatch.setattr(chat_module, "workflow_registry", registry)
+
+    captured_messages: list = []
+
+    async def _side_effect(messages, tools):
+        captured_messages.append(messages[:])
+        if len(captured_messages) == 1:
+            # First call: LLM invokes check_capacity
+            return LLMResponse(
+                content="",
+                tool_calls=[{"id": "1", "name": "check_capacity", "arguments": {"required_days": 9}}],
+                finish_reason="tool_calls",
+            )
+        # Second call: LLM generates natural response after tool result
+        return LLMResponse(content="You can commit — 10 days available, 9.45 needed.", tool_calls=[], finish_reason="stop")
+
+    mock_provider = AsyncMock()
+    mock_provider.complete.side_effect = _side_effect
+    monkeypatch.setattr(chat_module, "get_provider", AsyncMock(return_value=mock_provider))
+
+    response = await client.post(
+        "/api/chat",
+        json={"message": "Can I take the project?", "available_days": 10.0},
+        headers=SESSION_HEADERS,
+    )
+    assert response.status_code == 200
+    body = response.json()
+    assert body["data"]["reply"] == "You can commit — 10 days available, 9.45 needed."
+    assert body["data"]["pending_action"] is None
+
+    # Verify tool result was included in second LLM call
+    assert len(captured_messages) == 2
+    second_call_messages = captured_messages[1]
+    tool_result_msg = next(
+        (m for m in second_call_messages if "[Tool result for check_capacity]" in m.get("content", "")),
+        None,
+    )
+    assert tool_result_msg is not None
+    tool_result = json.loads(tool_result_msg["content"].split("]: ", 1)[1])
+    assert tool_result["can_commit"] is True
+    assert tool_result["available_days"] == 10.0
+    assert tool_result["required_with_buffer"] == 9.45
+
+
+async def test_capacity_check_insufficient_returns_shortfall(client: AsyncClient, monkeypatch):
+    """With 8 available days and 9 required, tool result shows can_commit=False with shortfall."""
+    import app.api.chat as chat_module
+    from app.config.workflow_registry import WorkflowRegistry
+
+    registry = WorkflowRegistry()
+    registry._active = _CONFIG_WITH_CAPACITY_TOOL
+    monkeypatch.setattr(chat_module, "workflow_registry", registry)
+
+    captured_tool_result: dict = {}
+
+    async def _capturing_side_effect(messages, tools):
+        for msg in messages:
+            if "[Tool result for check_capacity]" in msg.get("content", ""):
+                captured_tool_result.update(
+                    json.loads(msg["content"].split("]: ", 1)[1])
+                )
+        if not captured_tool_result:
+            return LLMResponse(
+                content="",
+                tool_calls=[{"id": "1", "name": "check_capacity", "arguments": {"required_days": 9}}],
+                finish_reason="tool_calls",
+            )
+        return LLMResponse(content="You don't have enough capacity.", tool_calls=[], finish_reason="stop")
+
+    mock_provider = AsyncMock()
+    mock_provider.complete.side_effect = _capturing_side_effect
+    monkeypatch.setattr(chat_module, "get_provider", AsyncMock(return_value=mock_provider))
+
+    response = await client.post(
+        "/api/chat",
+        json={"message": "Can I take the project?", "available_days": 8.0},
+        headers=SESSION_HEADERS,
+    )
+    assert response.status_code == 200
+    assert response.json()["data"]["reply"] == "You don't have enough capacity."
+
+    assert captured_tool_result["can_commit"] is False
+    assert captured_tool_result["shortfall"] == 1.45
+
+
+async def test_capacity_check_available_days_not_in_llm_params(client: AsyncClient, monkeypatch):
+    """available_days must come from ChatRequest, not from LLM tool call params."""
+    import app.api.chat as chat_module
+    from app.config.workflow_registry import WorkflowRegistry
+
+    registry = WorkflowRegistry()
+    registry._active = _CONFIG_WITH_CAPACITY_TOOL
+    monkeypatch.setattr(chat_module, "workflow_registry", registry)
+
+    captured_tool_result: dict = {}
+
+    async def _side_effect(messages, tools):
+        for msg in messages:
+            if "[Tool result for check_capacity]" in msg.get("content", ""):
+                captured_tool_result.update(json.loads(msg["content"].split("]: ", 1)[1]))
+        if not captured_tool_result:
+            # LLM does NOT include available_days in its tool call params
+            return LLMResponse(
+                content="",
+                tool_calls=[{"id": "1", "name": "check_capacity", "arguments": {"required_days": 5}}],
+                finish_reason="tool_calls",
+            )
+        return LLMResponse(content="Result delivered.", tool_calls=[], finish_reason="stop")
+
+    mock_provider = AsyncMock()
+    mock_provider.complete.side_effect = _side_effect
+    monkeypatch.setattr(chat_module, "get_provider", AsyncMock(return_value=mock_provider))
+
+    response = await client.post(
+        "/api/chat",
+        # available_days=20 from request — NOT from LLM params
+        json={"message": "Check capacity", "available_days": 20.0},
+        headers=SESSION_HEADERS,
+    )
+    assert response.status_code == 200
+    # The capacity check used available_days=20.0 from request, not from LLM
+    assert captured_tool_result["available_days"] == 20.0
+    assert captured_tool_result["can_commit"] is True  # 20 >= 5 * 1.05 = 5.25
+
+
+# ---------------------------------------------------------------------------
+# fetch_open_work — internal action auto-executes, returns opportunities to LLM
+# ---------------------------------------------------------------------------
+
+_CONFIG_WITH_OPEN_WORK_TOOL = {
+    "version": "1.0.0",
+    "workflow_id": "planning",
+    "open_work_board": {"google_docs_url": "https://docs.google.com/document/d/FAKE_ID/edit"},
+    "tools": [
+        {
+            "name": "fetch_open_work",
+            "description": "Fetch open work opportunities.",
+            "parameters": {"type": "object", "properties": {}, "required": []},
+            "integration": None,
+            "action": "fetch_open_work",
+        }
+    ],
+    "agent_instructions": "You are a planning assistant.",
+}
+
+_OPEN_WORK_RESULT = {
+    "opportunities": [
+        {"title": "Project Alpha", "type": "billable", "details": "5 days"},
+        {"title": "Training", "type": "internal", "details": "1 day"},
+    ]
+}
+
+
+async def test_fetch_open_work_auto_executes_and_feeds_llm(client: AsyncClient, monkeypatch):
+    """LLM calls fetch_open_work → handler executes → result fed back → LLM replies, no pending_action."""
+    import app.api.chat as chat_module
+    from app.config.workflow_registry import WorkflowRegistry
+    from unittest.mock import AsyncMock
+
+    registry = WorkflowRegistry()
+    registry._active = _CONFIG_WITH_OPEN_WORK_TOOL
+    monkeypatch.setattr(chat_module, "workflow_registry", registry)
+
+    mock_docs = AsyncMock()
+    mock_docs.execute.return_value = _OPEN_WORK_RESULT
+    monkeypatch.setattr(chat_module, "_google_docs", mock_docs)
+
+    captured_messages: list = []
+
+    async def _side_effect(messages, tools):
+        captured_messages.append(messages[:])
+        if len(captured_messages) == 1:
+            return LLMResponse(
+                content="",
+                tool_calls=[{"id": "1", "name": "fetch_open_work", "arguments": {}}],
+                finish_reason="tool_calls",
+            )
+        return LLMResponse(content="There are 2 opportunities available.", tool_calls=[], finish_reason="stop")
+
+    mock_provider = AsyncMock()
+    mock_provider.complete.side_effect = _side_effect
+    monkeypatch.setattr(chat_module, "get_provider", AsyncMock(return_value=mock_provider))
+
+    response = await client.post(
+        "/api/chat",
+        json={"message": "What open work is available?"},
+        headers=SESSION_HEADERS,
+    )
+    assert response.status_code == 200
+    body = response.json()
+    assert body["data"]["reply"] == "There are 2 opportunities available."
+    assert body["data"]["pending_action"] is None
+
+    assert len(captured_messages) == 2
+    tool_result_msg = next(
+        (m for m in captured_messages[1] if "[Tool result for fetch_open_work]" in m.get("content", "")),
+        None,
+    )
+    assert tool_result_msg is not None
+    result = json.loads(tool_result_msg["content"].split("]: ", 1)[1])
+    assert len(result["opportunities"]) == 2
+    mock_docs.execute.assert_awaited_once_with(
+        "fetch_open_work",
+        {"url": "https://docs.google.com/document/d/FAKE_ID/edit"},
+    )
+
+
+async def test_fetch_open_work_no_board_config_returns_503(client: AsyncClient, monkeypatch):
+    """Missing open_work_board config → IntegrationError → 503."""
+    import app.api.chat as chat_module
+    from app.config.workflow_registry import WorkflowRegistry
+    from unittest.mock import AsyncMock
+
+    config_no_board = {**_CONFIG_WITH_OPEN_WORK_TOOL, "open_work_board": None}
+    registry = WorkflowRegistry()
+    registry._active = config_no_board
+    monkeypatch.setattr(chat_module, "workflow_registry", registry)
+
+    mock_provider = AsyncMock()
+    mock_provider.complete.return_value = LLMResponse(
+        content="",
+        tool_calls=[{"id": "1", "name": "fetch_open_work", "arguments": {}}],
+        finish_reason="tool_calls",
+    )
+    monkeypatch.setattr(chat_module, "get_provider", AsyncMock(return_value=mock_provider))
+
+    response = await client.post(
+        "/api/chat",
+        json={"message": "What work is available?"},
+        headers=SESSION_HEADERS,
+    )
+    assert response.status_code == 503
+
+
+async def test_fetch_open_work_docs_integration_error_returns_503(client: AsyncClient, monkeypatch):
+    """Google Docs integration failure → 503."""
+    import app.api.chat as chat_module
+    from app.config.workflow_registry import WorkflowRegistry
+    from app.core.exceptions import IntegrationError
+    from unittest.mock import AsyncMock
+
+    registry = WorkflowRegistry()
+    registry._active = _CONFIG_WITH_OPEN_WORK_TOOL
+    monkeypatch.setattr(chat_module, "workflow_registry", registry)
+
+    mock_docs = AsyncMock()
+    mock_docs.execute.side_effect = IntegrationError("google_docs", "Token refresh failed")
+    monkeypatch.setattr(chat_module, "_google_docs", mock_docs)
+
+    mock_provider = AsyncMock()
+    mock_provider.complete.return_value = LLMResponse(
+        content="",
+        tool_calls=[{"id": "1", "name": "fetch_open_work", "arguments": {}}],
+        finish_reason="tool_calls",
+    )
+    monkeypatch.setattr(chat_module, "get_provider", AsyncMock(return_value=mock_provider))
+
+    response = await client.post(
+        "/api/chat",
+        json={"message": "What work is available?"},
+        headers=SESSION_HEADERS,
+    )
+    assert response.status_code == 503

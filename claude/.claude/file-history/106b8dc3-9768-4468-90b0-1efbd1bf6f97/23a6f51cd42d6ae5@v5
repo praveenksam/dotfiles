@@ -1,0 +1,413 @@
+# Story 1.2: Tableau Extension Shell & Initialization
+
+Status: done
+
+## Story
+
+As an **admin**,
+I want the autom9 extension to load inside a Tableau dashboard without errors,
+so that consultants see the extension panel and the system is ready to make backend calls.
+
+## Acceptance Criteria
+
+1. **Given** the `.trex` manifest is registered in Tableau Desktop or Tableau Cloud **When** a consultant opens a Tableau dashboard with the autom9 extension **Then** the extension panel renders without a blank screen or error message
+
+2. **Given** the extension panel has mounted **When** `tableau.extensions.initializeAsync()` is called **Then** no store initialization or backend HTTP calls begin until the promise resolves **And** if `initializeAsync()` rejects, the extension displays a clear load-failure message
+
+3. **Given** the extension is running in development **When** the extension frontend makes an HTTP call to the backend **Then** CORS headers are accepted for the configured Tableau origins (no CORS errors in browser console)
+
+4. **Given** any Tableau Dashboard (Desktop or Cloud/Server) **When** the extension is loaded **Then** the extension shell renders correctly in both environments (FR29)
+
+## Tasks / Subtasks
+
+- [x] **Task 1: Add Tableau Extensions API runtime script to `index.html`** (AC: 1, 2, 4)
+  - [x] Add script tag before closing `</head>` in `autom9-extension/index.html`:
+    ```html
+    <script src="https://public.tableau.com/javascripts/api/extensions_api.bundle.js"></script>
+    ```
+  - [x] This is the runtime that provides `window.tableau` — without it `initializeAsync` is undefined even with the types package installed
+
+- [x] **Task 2: Create `autom9.trex` manifest** (AC: 1, 4)
+  - [ ] Create `autom9-extension/autom9.trex` with exact XML structure below (Tableau ignores non-XML content):
+    ```xml
+    <?xml version="1.0" encoding="utf-8"?>
+    <manifest manifest-version="0.1" xmlns="http://www.tableau.com/xml/extension_manifest">
+      <desktop-extension id="com.autom9.extension" extension-version="0.1.0">
+        <default-locale>en_US</default-locale>
+        <name resource-id="name"/>
+        <description resource-id="description"/>
+        <author name="autom9" email="" organization="" website=""/>
+        <min-api-version>1.4</min-api-version>
+        <source-location>
+          <url>http://localhost:5173</url>
+        </source-location>
+        <permissions>
+          <permission>read</permission>
+        </permissions>
+      </desktop-extension>
+      <resources>
+        <resource id="name">
+          <text locale="en_US">autom9</text>
+        </resource>
+        <resource id="description">
+          <text locale="en_US">AI planning assistant for consultants</text>
+        </resource>
+      </resources>
+    </manifest>
+    ```
+  - [x] `source-location` URL = the extension frontend URL (Vite dev server at localhost:5173). This is NOT the backend URL. The backend URL is configured separately via `VITE_BACKEND_URL`.
+  - [x] `id` must be unique reverse-DNS format; `min-api-version` 1.4 supports Tableau Desktop 2019.4+
+  - [x] `permission` value `read` = read worksheet data; do NOT add write permissions
+
+- [x] **Task 3: Add `CORS_ORIGINS` to backend config and wire CORS middleware** (AC: 3)
+  - [x] In `autom9-backend/app/core/config.py`, add one field to `Settings` class:
+    ```python
+    CORS_ORIGINS: str = "http://localhost:5173"
+    ```
+    Use a default so existing tests are unaffected. Comma-separated list format: `"http://localhost:5173,https://prod.tableau.com"`.
+  - [x] In `autom9-backend/app/main.py`, add CORS middleware **before** route definitions (order matters in ASGI middleware stack):
+    ```python
+    from fastapi.middleware.cors import CORSMiddleware
+
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=[o.strip() for o in settings.CORS_ORIGINS.split(",")],
+        allow_credentials=True,
+        allow_methods=["*"],
+        allow_headers=["*"],
+    )
+    ```
+  - [x] Update `autom9-backend/.env.example`: add `CORS_ORIGINS=http://localhost:5173`
+  - [x] Update root `docker-compose.yml` `app` service `environment:` block: add `CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost:5173}`
+
+- [x] **Task 4: Create `src/lib/tableau.ts` — Tableau API wrapper** (AC: 2)
+  - [x] Create `autom9-extension/src/lib/tableau.ts`:
+    ```typescript
+    /**
+     * Thin wrapper around window.tableau.extensions.initializeAsync().
+     * Resolves immediately when Tableau runtime is absent (dev/test environment).
+     */
+    export async function initializeExtension(): Promise<void> {
+      if (typeof window === 'undefined' || !('tableau' in window)) {
+        // No Tableau runtime — running in dev/test outside Tableau Desktop/Cloud
+        return;
+      }
+      await (window as typeof window & { tableau: { extensions: { initializeAsync: () => Promise<void> } } })
+        .tableau.extensions.initializeAsync();
+    }
+    ```
+  - [x] Do NOT use `import tableau from '@tableau/extensions-api-types'` — the types package provides ambient type declarations only; the runtime is the CDN script. Access via `window.tableau` cast.
+  - [x] Do NOT call `initializeAsync()` more than once — Tableau throws if called on an already-initialized extension.
+
+- [x] **Task 5: Create `src/lib/api.ts` — backend HTTP client scaffold** (architecture requirement; used fully in Story 1.3)
+  - [x] Create `autom9-extension/src/lib/api.ts`:
+    ```typescript
+    const BACKEND_URL = import.meta.env.VITE_BACKEND_URL ?? 'http://localhost:8000';
+
+    export class ApiError extends Error {
+      constructor(
+        public readonly code: string,
+        message: string,
+        public readonly status: number,
+      ) {
+        super(message);
+        this.name = 'ApiError';
+      }
+    }
+
+    export async function apiFetch<T>(
+      path: string,
+      init?: RequestInit,
+    ): Promise<T> {
+      let response: Response;
+      try {
+        response = await fetch(`${BACKEND_URL}${path}`, {
+          ...init,
+          headers: {
+            'Content-Type': 'application/json',
+            ...init?.headers,
+          },
+        });
+      } catch (err) {
+        throw new ApiError('NETWORK_ERROR', 'Unable to reach the autom9 backend', 0);
+      }
+
+      if (!response.ok) {
+        let code = 'UNKNOWN_ERROR';
+        let message = `Request failed with status ${response.status}`;
+        try {
+          const body = await response.json();
+          code = body?.error?.code ?? code;
+          message = body?.error?.message ?? message;
+        } catch {
+          // non-JSON error body — keep defaults
+        }
+        throw new ApiError(code, message, response.status);
+      }
+
+      return response.json() as Promise<T>;
+    }
+    ```
+  - [x] JSON field names from the API are `snake_case`; camelCase conversion for internal Svelte state is done at the call site, NOT inside `apiFetch`. See architecture API envelope spec.
+  - [x] `VITE_BACKEND_URL` is a Vite env var (must be prefixed `VITE_` to be exposed to client bundle).
+  - [x] Create `autom9-extension/.env.example` with: `VITE_BACKEND_URL=http://localhost:8000`
+
+- [x] **Task 6: Replace `App.svelte` with initialization gate** (AC: 1, 2)
+  - [x] Replace the entire contents of `autom9-extension/src/App.svelte` with:
+    ```svelte
+    <script lang="ts">
+      import { onMount } from 'svelte';
+      import { initializeExtension } from './lib/tableau';
+
+      type Status = 'loading' | 'ready' | 'error';
+
+      let status = $state<Status>('loading');
+      let errorMessage = $state('');
+
+      onMount(async () => {
+        try {
+          await initializeExtension();
+          status = 'ready';
+        } catch (err) {
+          errorMessage =
+            err instanceof Error ? err.message : 'Extension failed to initialize';
+          status = 'error';
+        }
+      });
+    </script>
+
+    {#if status === 'loading'}
+      <div class="autom9-loading">
+        <p>Loading autom9…</p>
+      </div>
+    {:else if status === 'error'}
+      <div class="autom9-error">
+        <p><strong>autom9 failed to load</strong></p>
+        <p>{errorMessage}</p>
+      </div>
+    {:else}
+      <!-- Extension shell — components added in subsequent stories (1.3+) -->
+      <div class="autom9-shell">
+        <p>autom9 ready.</p>
+      </div>
+    {/if}
+
+    <style>
+      .autom9-loading,
+      .autom9-error,
+      .autom9-shell {
+        font-family: sans-serif;
+        padding: 1rem;
+      }
+      .autom9-error {
+        color: #c00;
+      }
+    </style>
+    ```
+  - [x] `$state` is a Svelte 5 rune — valid inside `.svelte` files without `.svelte.ts` extension
+  - [x] No stores are initialized here; no backend HTTP calls are made here — the gate enforces this (AC2)
+  - [x] Delete `autom9-extension/src/lib/Counter.svelte` — dead default scaffold code
+
+- [x] **Task 7: Write backend CORS tests** (AC: 3)
+  - [x] Add `autom9-backend/tests/test_cors.py`:
+    ```python
+    import pytest
+    from httpx import AsyncClient, ASGITransport
+    from app.main import app
+
+
+    @pytest.mark.asyncio
+    async def test_cors_allowed_origin_returns_header():
+        async with AsyncClient(
+            transport=ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            response = await client.get(
+                "/health",
+                headers={"Origin": "http://localhost:5173"},
+            )
+        assert response.status_code == 200
+        assert response.headers.get("access-control-allow-origin") == "http://localhost:5173"
+
+
+    @pytest.mark.asyncio
+    async def test_cors_preflight_allowed_origin():
+        async with AsyncClient(
+            transport=ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            response = await client.options(
+                "/health",
+                headers={
+                    "Origin": "http://localhost:5173",
+                    "Access-Control-Request-Method": "POST",
+                    "Access-Control-Request-Headers": "Content-Type",
+                },
+            )
+        assert response.status_code == 200
+        assert "access-control-allow-origin" in response.headers
+
+
+    @pytest.mark.asyncio
+    async def test_cors_disallowed_origin_no_acao_header():
+        async with AsyncClient(
+            transport=ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            response = await client.get(
+                "/health",
+                headers={"Origin": "http://evil.example.com"},
+            )
+        assert response.status_code == 200
+        assert response.headers.get("access-control-allow-origin") != "http://evil.example.com"
+    ```
+  - [x] These tests use the real `app` instance with the real `Settings()` — ensure test environment has required env vars set (existing conftest handles this via `monkeypatch` / module-level env setup)
+  - [x] ⚠️ If `Settings()` fails at import time during tests, check that `conftest.py` sets all required env vars before `app.main` is imported. The CORS test file imports `app.main` directly.
+
+- [x] **Task 8: Verify frontend build** (AC: 1, 4)
+  - [x] Run `npm run build` from `autom9-extension/` — must produce `dist/` with no errors
+  - [x] Run `npm run check` from `autom9-extension/` — svelte-check + tsc must pass with no type errors
+  - [x] Fix any TypeScript errors introduced by the new files before marking this task complete
+
+## Dev Notes
+
+### Architecture Source
+All decisions for this story: `_bmad-output/planning-artifacts/architecture.md` — "Frontend Architecture", "Gap Analysis Results" (items 1–4), "API & Communication Patterns" (CORS), and "Implementation Handoff".
+
+### Critical: `.trex` `source-location` is the extension frontend URL, not the backend
+The `.trex` file tells Tableau where to load the extension HTML. In dev this is `http://localhost:5173` (the Vite dev server). In production it would be the hosted extension URL. The backend is at a different port (8000) and is never referenced in `.trex`.
+
+### Critical: Svelte 5 `$state` rune in `.svelte` files
+`$state` runes are valid inside `<script>` blocks in `.svelte` components without the `.svelte.ts` extension. The `.svelte.ts` extension is required only for standalone TypeScript files that use runes outside a component (e.g., store files in `src/stores/`). `App.svelte` is a component — `$state` works there directly.
+
+### Critical: Do not use `writable()` from `svelte/store`
+That is the Svelte 4 API. Svelte 5 uses class-based `$state` in `.svelte.ts` files for stores. No stores are created in this story — stores are Story 1.3+ — but do not import from `svelte/store` anywhere.
+
+### Critical: CORS middleware order in FastAPI
+`app.add_middleware()` must be called after `app = FastAPI(...)` but BEFORE `@app.get(...)` route decorators are defined, otherwise preflight OPTIONS requests may not match the middleware. In `app/main.py`, add middleware immediately after `app = FastAPI(title="autom9", lifespan=lifespan)`.
+
+### Critical: `CORS_ORIGINS` field has a default — not breaking
+`CORS_ORIGINS: str = "http://localhost:5173"` has a Python default, so it is not a required pydantic-settings field. Existing tests pass `ValidationError` checks without setting it. All six currently required fields remain required.
+
+### Backend settings rename (from Story 1.1 review decision)
+The spec originally named these `DATABASE_POOL_MIN` and `DATABASE_POOL_MAX`. The implementation renamed them to `DATABASE_POOL_BASE` and `DATABASE_POOL_OVERFLOW` (accepted in review). Do NOT rename them back. This affects `app/core/config.py`, `app/db/engine.py`, `docker-compose.yml`, `.env.example`, and `tests/conftest.py`.
+
+### CORS test environment isolation
+The CORS tests in `test_cors.py` import `app.main` which triggers `Settings()` at module import. The conftest must establish env vars before this import. If tests are run in isolation (`pytest tests/test_cors.py`) and conftest env setup hasn't run, the import fails. Run the full suite (`pytest`) to ensure conftest ordering. This is a known caveat from Story 1.1 (deferred: "Module-level engine + settings creation couples production config to test import chain").
+
+### Tableau Extensions API type access
+The `@tableau/extensions-api-types` package (1.16.0 installed) provides ambient TypeScript declarations. Access `tableau` through `window` with an explicit cast — do not `import tableau from ...` as there is no default export. The runtime is the CDN script added to `index.html`.
+
+### `initializeAsync()` in dev without Tableau runtime
+When `npm run dev` is run outside Tableau Desktop/Cloud, `window.tableau` is undefined (the CDN script is unreachable or the Tableau object is not injected). The `initializeExtension()` wrapper in `tableau.ts` detects this and resolves immediately, allowing the extension shell to render in `ready` state in a normal browser. This is intentional — it enables development iteration without requiring Tableau Desktop.
+
+### `api.ts` is scaffold only — not called in this story
+`api.ts` is created in Task 5 for use starting in Story 1.3 (`/api/status` health check call). No component in Story 1.2 calls `apiFetch`. Do not add any calls to `apiFetch` here.
+
+### Scope Boundaries — What Belongs in Story 1.3
+| Concern | Story |
+|---|---|
+| `StatusBar.svelte` component | 1.3 |
+| Integration health check (`GET /api/status`) | 1.3 |
+| Session creation on load | 1.3 |
+| `IntegrationBase` and `LLMProvider` interfaces | 1.3 |
+| `chatStore`, `sessionStore`, `statusStore` implementations | 1.3+ |
+| Any backend route other than `/health` and `/api/health` | 1.3+ |
+
+### Project Structure — Files Modified in This Story
+```
+autom9-extension/
+├── index.html                         # Add Tableau CDN script tag
+├── autom9.trex                        # NEW — Tableau extension manifest
+├── .env.example                       # NEW — VITE_BACKEND_URL placeholder
+├── src/
+│   ├── App.svelte                     # REPLACE — initialization gate
+│   └── lib/
+│       ├── Counter.svelte             # DELETE — default scaffold component
+│       ├── tableau.ts                 # NEW — Tableau API wrapper
+│       └── api.ts                     # NEW — backend HTTP client scaffold
+
+autom9-backend/
+├── app/
+│   ├── main.py                        # ADD CORSMiddleware
+│   └── core/
+│       └── config.py                  # ADD CORS_ORIGINS field (with default)
+├── .env.example                       # ADD CORS_ORIGINS line
+├── tests/
+│   └── test_cors.py                   # NEW — 3 CORS tests
+
+docker-compose.yml (root)              # ADD CORS_ORIGINS to app environment block
+```
+
+### References
+- `.trex` manifest requirement: [Source: _bmad-output/planning-artifacts/architecture.md#Gap Analysis Results — item 1]
+- CORS configuration: [Source: _bmad-output/planning-artifacts/architecture.md#Gap Analysis Results — item 2]
+- `initializeAsync()` gate: [Source: _bmad-output/planning-artifacts/architecture.md#Gap Analysis Results — item 4]
+- Frontend component structure: [Source: _bmad-output/planning-artifacts/architecture.md#Frontend Architecture]
+- API error handling (`ApiError`): [Source: _bmad-output/planning-artifacts/architecture.md#Error Handling Patterns]
+- API response envelope: [Source: _bmad-output/planning-artifacts/architecture.md#Format Patterns]
+- Svelte 5 store pattern (`.svelte.ts`): [Source: _bmad-output/implementation-artifacts/1-1-project-scaffolding-backend-foundation.md#Dev Notes]
+- `DATABASE_POOL_BASE`/`OVERFLOW` rename: [Source: _bmad-output/implementation-artifacts/1-1-project-scaffolding-backend-foundation.md#Review Findings — Decision]
+
+## Dev Agent Record
+
+### Agent Model Used
+
+claude-sonnet-4-6
+
+### Debug Log References
+
+- CORS test env: conftest sets env vars at module level before any `app.*` import, so `test_cors.py` importing `app.main` directly works correctly when running the full suite.
+- `tableau.ts` uses local type declaration (`TableauExtensions`) rather than casting with `@tableau/extensions-api-types` import to avoid ambient type conflicts with the CDN runtime.
+- `api.ts` VITE env var typed as `string | undefined` with explicit cast to avoid TypeScript strict-null error on `import.meta.env` access.
+
+### Completion Notes List
+
+- ✅ Task 1: Tableau CDN script added to `autom9-extension/index.html` before `</head>`. `npm run build` and `npm run check` pass — 0 errors, 0 warnings.
+- ✅ Task 2: `autom9-extension/autom9.trex` created with correct XML structure. `source-location` points to `http://localhost:5173` (Vite dev server). `min-api-version 1.4`. `read` permission only.
+- ✅ Task 3: `CORS_ORIGINS: str = "http://localhost:5173"` added to `Settings` with Python default (non-breaking). `CORSMiddleware` wired in `app/main.py` immediately after `app = FastAPI(...)`. `.env.example` and `docker-compose.yml` updated.
+- ✅ Task 4: `autom9-extension/src/lib/tableau.ts` created with local type declaration and `window.tableau` guard. Resolves immediately when no Tableau runtime present.
+- ✅ Task 5: `autom9-extension/src/lib/api.ts` created with `ApiError` class and `apiFetch<T>` generic. `autom9-extension/.env.example` created with `VITE_BACKEND_URL`.
+- ✅ Task 6: `App.svelte` fully replaced with Svelte 5 `$state` initialization gate. `Counter.svelte` deleted. No stores or backend calls in this component.
+- ✅ Task 7: `tests/test_cors.py` created with 3 tests (allowed origin, preflight, disallowed origin). All 6 backend tests pass (0 regressions).
+- ✅ Task 8: `npm run build` ✓ (111 modules, 73ms). `npm run check` ✓ (87 files, 0 errors, 0 warnings).
+
+### File List
+
+autom9-extension/index.html
+autom9-extension/autom9.trex
+autom9-extension/.env.example
+autom9-extension/src/App.svelte
+autom9-extension/src/lib/tableau.ts
+autom9-extension/src/lib/api.ts
+autom9-extension/src/lib/Counter.svelte (deleted)
+autom9-backend/app/main.py
+autom9-backend/app/core/config.py
+autom9-backend/.env.example
+autom9-backend/tests/test_cors.py
+docker-compose.yml
+
+### Review Findings
+
+- [x] [Review][Defer] initializeExtension() cannot distinguish dev-absence from production CDN failure — silent no-op AC2 gap deferred; address in Story 1.3 when initialization is more complete [`autom9-extension/src/lib/tableau.ts:19`] — deferred, out of scope for shell story
+
+- [x] [Review][Patch] initializeAsync() called without call-once guard — no flag prevents double-invocation on HMR/remount [autom9-extension/src/lib/tableau.ts:24]
+- [x] [Review][Defer] CORS middleware uses allow_credentials=True with allow_methods=["*"] / allow_headers=["*"] — over-grant not specified by story; not needed at current stage but can be fixed later [autom9-backend/app/main.py:20-22] — deferred
+- [x] [Review][Patch] CORS_ORIGINS.split(",") produces empty-string entries on trailing comma — filter empty entries [autom9-backend/app/main.py:19]
+- [x] [Review][Patch] apiFetch success-path response.json() not wrapped in try/catch — malformed 200 body throws SyntaxError bypassing ApiError contract [autom9-extension/src/lib/api.ts:47]
+- [x] [Review][Patch] VITE_BACKEND_URL="" (empty string) bypasses ?? fallback — empty string is not null/undefined, producing fetch("" + path) [autom9-extension/src/lib/api.ts:7]
+- [x] [Review][Patch] test_cors disallowed-origin assertion too weak — `!= evil.example.com` passes if header is "*"; change to `is None` [autom9-backend/tests/test_cors.py:47]
+
+- [x] [Review][Defer] Hardcoded postgres credentials in docker-compose.yml [docker-compose.yml:6-7] — deferred, pre-existing dev practice from Story 1.1
+- [x] [Review][Defer] ENCRYPTION_KEY/BACKEND_SECRET accept any string, no min-length validation [autom9-backend/app/core/config.py:11-12] — deferred, pre-existing Story 1.1
+- [x] [Review][Defer] No timeout on initializeAsync() — permanent loading state on hung promise [autom9-extension/src/lib/tableau.ts:24] — deferred, out of scope Story 1.3+
+- [x] [Review][Defer] No timeout on apiFetch() calls [autom9-extension/src/lib/api.ts:23] — deferred, out of scope
+- [x] [Review][Defer] DB port 5432 exposed to host in docker-compose.yml [docker-compose.yml:12] — deferred, pre-existing
+- [x] [Review][Defer] LOG_LEVEL accepts arbitrary strings with no validation [autom9-backend/app/core/config.py:14] — deferred, pre-existing
+- [x] [Review][Defer] BACKEND_URL default is plain HTTP — VITE_BACKEND_URL spec example is http://localhost:8000, intentional for dev [autom9-extension/src/lib/api.ts:7] — deferred, by design
+- [x] [Review][Defer] .trex source-location hardcoded to localhost — requires manual edit per environment [autom9-extension/autom9.trex:10] — deferred, intentional per spec
+- [x] [Review][Defer] test_cors.py module-level import of app.main fragile when run in isolation [autom9-backend/tests/test_cors.py:4] — deferred, known Story 1.1 caveat per spec
+- [x] [Review][Defer] window.tableau.extensions not null-checked before access [autom9-extension/src/lib/tableau.ts:24] — deferred, minor; type guard sufficient for expected runtime
+- [x] [Review][Defer] ENCRYPTION_KEY/BACKEND_SECRET unguarded in docker-compose (empty string passthrough) [docker-compose.yml:30-31] — deferred, pre-existing
+
+## Change Log
+
+- 2026-04-15: Story 1.2 implemented — Tableau extension shell, .trex manifest, CORS middleware, initializeAsync gate, api.ts scaffold. 8 tasks complete, 6 tests pass (claude-sonnet-4-6)
+- 2026-04-15: Code review complete — 5 patches applied (call-once guard, CORS_ORIGINS filter, apiFetch JSON error wrap, VITE_BACKEND_URL empty-string fallback, test assertion); 1 patch deferred (CORS wildcards); status → done

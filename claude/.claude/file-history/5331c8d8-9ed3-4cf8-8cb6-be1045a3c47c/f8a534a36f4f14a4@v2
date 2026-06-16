@@ -1,0 +1,12 @@
+---
+stepsCompleted: ['step-01-init']
+inputDocuments: ['_bmad-output/planning-artifacts/prd.md', '_bmad-output/planning-artifacts/product-brief-autom9.md']
+workflowType: 'architecture'
+project_name: 'autom9'
+user_name: 'CodeBeard'
+date: '2026-04-08'
+---
+
+# Architecture Decision Document
+
+_This document builds collaboratively through step-by-step discovery. Sections are appended as we work through each architectural decision together._

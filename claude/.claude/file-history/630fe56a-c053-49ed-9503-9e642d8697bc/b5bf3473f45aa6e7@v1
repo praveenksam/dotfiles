@@ -1,0 +1,6 @@
+DATABASE_URL=postgresql+asyncpg://user:password@localhost:5432/autom9
+ENCRYPTION_KEY=your-encryption-key-here
+BACKEND_SECRET=your-backend-secret-here
+LOG_LEVEL=INFO
+DATABASE_POOL_BASE=2
+DATABASE_POOL_OVERFLOW=10

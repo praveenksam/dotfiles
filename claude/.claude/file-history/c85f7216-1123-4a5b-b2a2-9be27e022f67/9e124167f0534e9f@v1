@@ -1,0 +1,42 @@
+import os
+
+import pytest
+from httpx import ASGITransport, AsyncClient
+from pydantic import ValidationError
+
+from app.main import app
+
+
+async def test_health_returns_ok():
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as ac:
+        response = await ac.get("/health")
+    assert response.status_code == 200
+    assert response.json() == {"status": "ok"}
+
+
+async def test_api_health_returns_ok():
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as ac:
+        response = await ac.get("/api/health")
+    assert response.status_code == 200
+    assert response.json() == {"status": "ok"}
+
+
+def test_missing_env_var_exits(monkeypatch, capsys):
+    import sys
+    import importlib
+
+    exit_calls = []
+    monkeypatch.setattr(sys, "exit", lambda code=0: exit_calls.append(code))
+    monkeypatch.delenv("DATABASE_URL", raising=False)
+
+    import app.core.config
+    importlib.reload(app.core.config)
+
+    assert exit_calls == [1]
+    captured = capsys.readouterr()
+    assert "DATABASE_URL" in captured.err
+
+    # Restore module to working state so subsequent tests are not affected
+    monkeypatch.setenv("DATABASE_URL",
+        "postgresql+asyncpg://autom9:autom9@localhost:5432/autom9_test")
+    importlib.reload(app.core.config)

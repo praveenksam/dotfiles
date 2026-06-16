@@ -1,0 +1,18 @@
+from app.integrations.base import IntegrationBase, IntegrationStatus
+from app.core.exceptions import IntegrationError
+
+
+class GoogleCalendarIntegration(IntegrationBase):
+    @property
+    def name(self) -> str:
+        return "google_calendar"
+
+    async def health_check(self) -> IntegrationStatus:
+        return IntegrationStatus(
+            name=self.name,
+            status="unavailable",
+            error="not configured",
+        )
+
+    async def execute(self, action: str, params: dict) -> dict:
+        raise IntegrationError(self.name, "Google Calendar not configured")

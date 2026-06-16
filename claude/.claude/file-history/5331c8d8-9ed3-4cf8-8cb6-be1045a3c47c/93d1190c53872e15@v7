@@ -1,0 +1,97 @@
+---
+stepsCompleted: ['step-01-init', 'step-02-discovery', 'step-02b-vision', 'step-02c-executive-summary', 'step-03-success']
+inputDocuments: ['_bmad-output/planning-artifacts/product-brief-autom9.md']
+workflowType: 'prd'
+briefCount: 1
+researchCount: 0
+brainstormingCount: 0
+projectDocsCount: 0
+classification:
+  projectType: saas_b2b
+  domain: general
+  complexity: medium
+  projectContext: greenfield
+---
+
+# Product Requirements Document - autom9
+
+**Author:** CodeBeard
+**Date:** 2026-04-08
+
+## Executive Summary
+
+autom9 is a Tableau dashboard extension that embeds an AI agent directly into the planning tool consultants already use as their system of record. The agent enables consultants to complete planning workflows — submitting Smartsheet requests, creating Google Calendar invites, picking up open work — without leaving Tableau. The core insight: the problem is not data visibility, which Tableau already solves, but the broken link between seeing data and acting on it. Every alternative requires pulling data out of context; autom9 closes that loop inside the tool.
+
+The POC targets ~80 consultants at a professional services firm. The underlying platform — BYOM (OpenAI and Anthropic), JSON-configured workflows, no external automation dependency — is designed to support multiple agent use cases beyond the initial planning assistant. The POC proves the value of the first use case and the extensibility of the platform simultaneously.
+
+### What Makes This Special
+
+**Workflow completion in a single surface.** Tableau is where consultants review their planning data; autom9 is where they act on it — same tab, same context, no handoff to Slack, Smartsheet, or email. This is architecturally only possible as a native Tableau Extension.
+
+**BYOM + JSON-driven extensibility.** New agent workflows are added via configuration, not bespoke engineering. The platform is explicitly designed to support a growing library of agent workflows. This directly counters Salesforce Einstein's model-locked, CRM-centric approach to AI in Tableau.
+
+**No direct competitor.** No commercially available Tableau extension offers BYOM agentic workflows with external tool integration. The competitive window is estimated at 12–18 months before Salesforce closes it with a native Agentforce integration.
+
+## Project Classification
+
+| | |
+|---|---|
+| **Project Type** | B2B SaaS / Platform |
+| **Domain** | AI / Workflow Automation |
+| **Complexity** | Medium |
+| **Project Context** | Greenfield |
+
+## Success Criteria
+
+### User Success
+
+- **Primary metric:** 60%+ of the 80 POC consultants complete at least one workflow action per week within 60 days of launch. A workflow action is defined as a completed Smartsheet planning request submitted via the extension. Google Calendar invite creation is tracked but optional for this threshold.
+- **Qualitative signal:** Testimonials from consultants citing measurable reduction in time spent on scheduling logistics and fewer context switches across tools.
+
+### Business Success
+
+- POC demonstrates that the consultant planning assistant creates genuine, repeatable value for the target user group — evidenced by adoption rate and qualitative feedback.
+- The platform's extensibility is validated internally by successfully configuring and deploying at least one additional agent workflow using the JSON system (post-POC, not a v1 deliverable).
+
+### Technical Success
+
+- All agent interactions are logged with sufficient detail to diagnose issues, trace failed tool calls, and identify latency patterns.
+- Agent responses complete within 20 seconds during the POC phase (nice-to-have target; no async/background execution required for v1).
+- The extension architecture supports future air-gapped deployment: local LLM integration and fully local extension install (no external cloud dependency). This is a design constraint for v1, not a v1 deliverable.
+
+### Measurable Outcomes
+
+| Metric | Target | Timeframe |
+|---|---|---|
+| Weekly active users (workflow completion) | 60%+ of 80 consultants | 60 days post-launch |
+| Smartsheet requests submitted via extension | Tracked per user | Ongoing |
+| Agent response time (p95) | ≤20 seconds (nice-to-have) | POC phase |
+| Failed/errored agent interactions | Logged and reviewable | At launch |
+
+## Product Scope
+
+### MVP — Minimum Viable Product
+
+- Consultant planning view: open days surfaced from Snowflake via Tableau data source
+- Task ingestion from individual Google Docs with clarifying Q&A in the chat panel
+- Smartsheet planning request trigger from the extension
+- Google Calendar invite creation around existing engagements
+- Org-wide open work board (Google Doc) with consultant matching flow
+- BYOM: OpenAI and Anthropic support
+- JSON workflow configuration system
+- Agent interaction logging
+- Tableau Desktop (development) + Tableau Cloud/Server (production)
+
+### Growth Features (Post-MVP)
+
+- At least one additional agent workflow configured and deployed via JSON (internal validation of platform extensibility)
+- Expanded logging and analytics: adoption dashboards, workflow completion rates
+- Additional BYOM model support
+
+### Vision (Future)
+
+- Local LLM support for air-gapped / no-cloud-dependency deployment
+- Fully local extension install (self-hosted, enterprise-grade isolation)
+- Open marketplace of Tableau agent workflows
+- Manager/team-level views across multiple consultants
+- Consulting Accelerator: packaged product for professional services firms

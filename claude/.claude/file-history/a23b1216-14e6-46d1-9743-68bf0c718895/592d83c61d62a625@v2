@@ -1,0 +1,91 @@
+/**
+ * Thin wrapper around window.tableau.extensions.initializeAsync().
+ * Resolves immediately when Tableau runtime is absent (dev/test environment).
+ */
+
+type TableauExtensions = {
+  extensions: {
+    initializeAsync: () => Promise<void>;
+  };
+};
+
+declare global {
+  interface Window {
+    tableau?: TableauExtensions;
+  }
+}
+
+export interface WorksheetRow {
+  [fieldName: string]: string;
+}
+
+let initialized = false;
+
+/**
+ * Returns the Tableau user identifier from the extension context.
+ * Falls back to "dev-user" when no Tableau runtime is present (dev/test).
+ * Must be called AFTER initializeExtension() resolves.
+ */
+export function getTableauUserId(): string {
+  if (typeof window === 'undefined' || !window.tableau) {
+    return 'dev-user';
+  }
+  try {
+    // tableau.extensions.environment.context is available post-initializeAsync()
+    const context = (window.tableau.extensions as unknown as {
+      environment?: { context?: { user?: { userId?: string } } };
+    }).environment?.context;
+    return context?.user?.userId ?? 'unknown-user';
+  } catch {
+    return 'unknown-user';
+  }
+}
+
+/**
+ * Reads summary data from a named Tableau worksheet.
+ * Returns an array of row objects keyed by field name (formattedValue).
+ * Throws an Error if the worksheet is not found or data cannot be retrieved.
+ * Returns [] immediately when no Tableau runtime is present (dev/test).
+ */
+export async function getWorksheetData(worksheetName: string): Promise<WorksheetRow[]> {
+  if (typeof window === 'undefined' || !window.tableau) {
+    return [];
+  }
+
+  const extensions = window.tableau.extensions as unknown as {
+    dashboardContent?: {
+      dashboard?: {
+        worksheets?: Array<{
+          name: string;
+          getSummaryDataAsync: () => Promise<{
+            columns: Array<{ fieldName: string }>;
+            data: Array<Array<{ formattedValue: string }>>;
+          }>;
+        }>;
+      };
+    };
+  };
+
+  const worksheets = extensions.dashboardContent?.dashboard?.worksheets ?? [];
+  const worksheet = worksheets.find((w) => w.name === worksheetName);
+  if (!worksheet) {
+    throw new Error(`Worksheet "${worksheetName}" not found in dashboard`);
+  }
+
+  const dataTable = await worksheet.getSummaryDataAsync();
+  const columns = dataTable.columns.map((c) => c.fieldName);
+  return dataTable.data.map((row) =>
+    Object.fromEntries(columns.map((col, i) => [col, row[i]?.formattedValue ?? '']))
+  );
+}
+
+export async function initializeExtension(): Promise<void> {
+  if (typeof window === 'undefined' || !window.tableau) {
+    // No Tableau runtime — running in dev/test outside Tableau Desktop/Cloud.
+    // Resolve immediately so the extension shell renders normally.
+    return;
+  }
+  if (initialized) return;
+  await window.tableau.extensions.initializeAsync();
+  initialized = true;
+}

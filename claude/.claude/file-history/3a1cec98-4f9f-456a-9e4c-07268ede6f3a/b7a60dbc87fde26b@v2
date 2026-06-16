@@ -1,0 +1,110 @@
+# autom9-extension
+
+Tableau dashboard extension frontend for autom9. Built with Svelte 5 + TypeScript + Vite. Loads inside Tableau Desktop or Tableau Cloud, initialises a backend session, checks integration health, and (in later epics) surfaces an AI planning agent for consultants.
+
+## What it does
+
+On load, the extension:
+1. Calls `tableau.extensions.initializeAsync()` — waits for the Tableau runtime before doing anything
+2. Creates a backend session (`POST /api/sessions`) tied to the Tableau user identity
+3. Runs parallel integration health checks (`GET /api/status`) and displays results in `StatusBar`
+4. Renders the admin panel (`AdminConfig`) when the URL contains `?admin`
+
+Admin panel lets an admin:
+- Select a BYOM LLM provider (OpenAI / Anthropic) and paste an API key → `POST /api/admin/credentials`
+- Paste a JSON workflow config and upload it → `POST /api/admin/config`
+
+## Tech stack
+
+- [Svelte 5](https://svelte.dev/) with runes (`$state()`) — no legacy store API
+- TypeScript (strict)
+- Vite 8
+- `@tableau/extensions-api-types` for Tableau runtime types
+
+## Project structure
+
+```
+src/
+  main.ts                        # Mounts App into #app
+  App.svelte                     # Root: Tableau init gate, session creation, status fetch
+  app.css                        # Global styles
+  lib/
+    api.ts                       # apiFetch() — typed HTTP client, 10s timeout, ApiError on failure
+    tableau.ts                   # initializeExtension() + getTableauUserId() wrappers
+  stores/
+    session.svelte.ts            # sessionStore — holds session_id + tableau_user_id
+    status.svelte.ts             # statusStore — holds integration health results
+  components/
+    StatusBar.svelte             # Renders per-integration health indicators
+    AdminConfig.svelte           # BYOM credential form (onMount fetches existing masked key)
+    WorkflowConfigPanel.svelte   # JSON config textarea → POST /api/admin/config
+autom9.trex                      # Tableau extension manifest (source URL, permissions)
+```
+
+## The `.trex` manifest
+
+`autom9.trex` is the Tableau extension manifest. Register it in Tableau Desktop via **Dashboard → Extensions → My Extensions**.
+
+- `<source-location>` points to `http://localhost:5173` for dev (Vite dev server)
+- For production, update this URL to wherever the built extension is hosted
+- `min-api-version` is `1.4` — compatible with Tableau Desktop 2019.2+ and Tableau Cloud
+
+## Environment variables
+
+| Variable | Default | Description |
+|---|---|---|
+| `VITE_BACKEND_URL` | `http://localhost:8000` | Backend base URL — overridden for staging/production builds |
+
+Set in a `.env` file at the project root:
+
+```
+VITE_BACKEND_URL=http://localhost:8000
+```
+
+## Running locally
+
+```bash
+# Install dependencies
+npm install
+
+# Start dev server (http://localhost:5173)
+npm run dev
+```
+
+Register `autom9.trex` in Tableau Desktop to load the extension in a dashboard. Without Tableau, the extension shell still renders — `lib/tableau.ts` falls back gracefully when no Tableau runtime is present.
+
+## Building
+
+```bash
+npm run build       # outputs to dist/
+npm run check       # TypeScript type-check (svelte-check + tsc)
+```
+
+## apiFetch conventions
+
+All backend calls go through `apiFetch()` in `src/lib/api.ts`:
+
+- **Timeout:** 10 seconds — throws `ApiError("REQUEST_TIMEOUT", ...)` on abort
+- **Errors:** non-2xx responses parse `{"error": {"code": "...", "message": "..."}}` from the backend envelope and throw `ApiError(code, message, status)`
+- **Network failure:** throws `ApiError("NETWORK_ERROR", ...)`
+- `Content-Type: application/json` is set by default; override in `init.headers`
+
+Admin routes require `X-Autom9-Token` — pass it in `init.headers`. The frontend does not inject it automatically (v1 dev-time concern; the token is never stored in the browser).
+
+## Admin panel
+
+Access via `?admin` (or `?admin=1`) in the extension URL. The backend `X-Autom9-Token` header must be provided by the caller — the UI has no login form.
+
+The admin panel has two sections:
+- **BYOM Credential Setup** (`AdminConfig.svelte`) — provider select + API key input. On mount, fetches the current masked key state to indicate whether credentials already exist.
+- **Workflow Configuration** (`WorkflowConfigPanel.svelte`) — textarea for the JSON workflow config. Client-side JSON parse before sending gives immediate feedback on malformed input.
+
+## What's not built yet
+
+| Component | Story |
+|---|---|
+| `DataPanel.svelte` — open days + task list from Tableau/Google Docs | Epic 3, Story 3.1 |
+| `ChatPanel.svelte`, `MessageList.svelte`, `InputBar.svelte` — agent chat | Epic 3, Story 3.3 |
+| `ActionConfirm.svelte` — pre-execution action confirmation | Epic 3, Story 3.4 |
+| `chatStore` state machine | Epic 3, Story 3.3 |
+| Open work board display | Epic 4, Story 4.1 |

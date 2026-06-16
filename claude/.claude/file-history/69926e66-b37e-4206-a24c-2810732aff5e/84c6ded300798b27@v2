@@ -1,0 +1,38 @@
+from abc import ABC, abstractmethod
+from dataclasses import dataclass, field
+from typing import Literal
+
+
+@dataclass
+class IntegrationStatus:
+    name: str
+    status: Literal["healthy", "unavailable"]
+    latency_ms: int | None = None
+    error: str | None = None
+
+
+class IntegrationBase(ABC):
+    """All integrations in app/integrations/ must implement this interface."""
+
+    @property
+    @abstractmethod
+    def name(self) -> str:
+        """Integration identifier. Must be overridden in each subclass."""
+        ...
+
+    @abstractmethod
+    async def health_check(self) -> IntegrationStatus:
+        """
+        Returns IntegrationStatus — NEVER raises.
+        Catch all errors internally and return status="unavailable".
+        This is the isolation guarantee: one failed check never blocks others.
+        """
+        ...
+
+    @abstractmethod
+    async def execute(self, action: str, params: dict) -> dict:
+        """
+        Executes an integration action.
+        Raises IntegrationError on failure — caught at app/api/ level.
+        """
+        ...

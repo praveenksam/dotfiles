@@ -1,0 +1,775 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>autom9-extension — Function Dependency Graph</title>
+  <script src="https://d3js.org/d3.v7.min.js"></script>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+      background: #0d1117; color: #e2e8f0;
+      display: flex; flex-direction: column; height: 100vh; overflow: hidden;
+    }
+
+    /* ── Header ── */
+    #header {
+      padding: 10px 20px; background: #161b22;
+      border-bottom: 1px solid #21262d;
+      display: flex; align-items: center; gap: 16px; flex-shrink: 0;
+    }
+    #header h1 { font-size: 15px; font-weight: 600; color: #f0f6fc; }
+    #header .sub { font-size: 11px; color: #6e7681; margin-top: 2px; }
+    #legend { display: flex; gap: 14px; margin-left: auto; }
+    .leg { display: flex; align-items: center; gap: 6px; font-size: 11px; color: #8b949e; }
+    .leg-dot { width: 9px; height: 9px; border-radius: 50%; }
+
+    /* ── Layout ── */
+    #main { display: flex; flex: 1; overflow: hidden; }
+
+    /* ── Sidebar ── */
+    #sidebar {
+      width: 240px; background: #161b22;
+      border-right: 1px solid #21262d;
+      overflow-y: auto; flex-shrink: 0;
+      scrollbar-width: thin; scrollbar-color: #30363d transparent;
+    }
+    #sidebar::-webkit-scrollbar { width: 4px; }
+    #sidebar::-webkit-scrollbar-thumb { background: #30363d; border-radius: 2px; }
+    .sb-cat-header {
+      padding: 6px 12px; font-size: 10px; font-weight: 700;
+      text-transform: uppercase; letter-spacing: 0.08em;
+      border-bottom: 1px solid #21262d; background: #0d1117;
+    }
+    .sb-file { border-bottom: 1px solid #161b22; }
+    .sb-file-hdr {
+      padding: 7px 12px; font-size: 11px; cursor: pointer;
+      display: flex; align-items: flex-start; gap: 8px;
+    }
+    .sb-file-hdr:hover { background: #1c2128; }
+    .sb-dot { width: 7px; height: 7px; border-radius: 50%; flex-shrink: 0; margin-top: 3px; }
+    .sb-fname { color: #c9d1d9; font-size: 11px; }
+    .sb-fpath { color: #484f58; font-size: 10px; margin-top: 1px; }
+    .sb-fns { padding: 0 0 4px 0; }
+    .sb-fn {
+      padding: 4px 12px 4px 28px; font-size: 11px; color: #6e7681;
+      cursor: pointer; font-family: ui-monospace, SFMono-Regular, monospace;
+    }
+    .sb-fn:hover { background: #1c2128; color: #c9d1d9; }
+    .sb-fn.active { background: #1f2937; color: #79c0ff; }
+
+    /* ── Graph canvas ── */
+    #canvas { flex: 1; position: relative; overflow: hidden; background: #0d1117; }
+    svg { width: 100%; height: 100%; }
+
+    /* ── SVG elements ── */
+    .col-bg { fill: rgba(255,255,255,0.015); stroke: none; rx: 12; }
+    .col-lbl { font-size: 10px; font-weight: 700; letter-spacing: 0.08em; fill-opacity: 0.35; }
+
+    .edge { fill: none; stroke-opacity: 0.45; transition: stroke-opacity 0.15s; }
+    .edge.hi { stroke-opacity: 1 !important; stroke-width: 2px !important; }
+    .edge.dim { stroke-opacity: 0.07 !important; }
+    .edge-lbl { font-size: 8.5px; fill: #3a404a; pointer-events: none; }
+    .edge-lbl.hi { fill: #6e7681 !important; }
+    .edge-lbl.dim { opacity: 0.15 !important; }
+
+    .node-g { cursor: pointer; }
+    .node-circle { transition: filter 0.15s; }
+    .node-g:hover .node-circle { filter: brightness(1.3); }
+    .node-g.hi .node-circle { filter: drop-shadow(0 0 7px var(--nc)) brightness(1.2); stroke-width: 2.5px !important; }
+    .node-g.dim .node-circle { opacity: 0.18; }
+    .node-g.dim .node-txt { opacity: 0.12; }
+    .node-txt { pointer-events: none; }
+
+    /* ── Tooltip ── */
+    #tip {
+      position: absolute; display: none;
+      background: #161b22; border: 1px solid #30363d;
+      border-radius: 8px; padding: 10px 13px; font-size: 11px;
+      max-width: 270px; z-index: 50; pointer-events: none;
+      box-shadow: 0 8px 24px rgba(0,0,0,0.5);
+    }
+    #tip .t-title { font-weight: 600; color: #f0f6fc; margin-bottom: 2px; font-family: monospace; font-size: 12px; }
+    #tip .t-file { color: #484f58; font-size: 10px; margin-bottom: 6px; }
+    #tip .t-desc { color: #8b949e; line-height: 1.45; margin-bottom: 6px; }
+    #tip .t-section { margin-top: 6px; }
+    #tip .t-sec-lbl { font-size: 9px; text-transform: uppercase; letter-spacing: 0.06em; color: #3a404a; margin-bottom: 3px; }
+    #tip .t-row { color: #6e7681; font-family: monospace; font-size: 10px; }
+    #tip .t-row span { color: #484f58; }
+
+    /* ── Controls ── */
+    #controls { position: absolute; bottom: 14px; right: 14px; display: flex; gap: 6px; }
+    .cbtn {
+      background: #161b22; border: 1px solid #30363d; color: #8b949e;
+      padding: 5px 11px; border-radius: 6px; cursor: pointer; font-size: 11px;
+    }
+    .cbtn:hover { background: #1c2128; color: #c9d1d9; }
+
+    #search-wrap { position: absolute; top: 10px; right: 14px; }
+    #search-wrap input {
+      background: #161b22; border: 1px solid #30363d; color: #c9d1d9;
+      padding: 5px 11px; border-radius: 6px; font-size: 11px; width: 190px; outline: none;
+    }
+    #search-wrap input:focus { border-color: #58a6ff; }
+    #search-wrap input::placeholder { color: #3a404a; }
+  </style>
+</head>
+<body>
+<div id="header">
+  <div>
+    <div class="sub" style="display:flex; gap:6px; align-items:center">
+      <span style="font-size:14px; font-weight:600; color:#f0f6fc">autom9-extension</span>
+      <span style="color:#30363d">|</span>
+      Function-level dependency graph
+    </div>
+    <div class="sub" style="margin-top:3px">Hover for details · Click node or sidebar item to trace dependencies · Drag to rearrange</div>
+  </div>
+  <div id="legend">
+    <div class="leg"><div class="leg-dot" style="background:#f87171"></div>Entry</div>
+    <div class="leg"><div class="leg-dot" style="background:#34d399"></div>Library</div>
+    <div class="leg"><div class="leg-dot" style="background:#60a5fa"></div>Store</div>
+    <div class="leg"><div class="leg-dot" style="background:#a78bfa"></div>Component</div>
+  </div>
+</div>
+
+<div id="main">
+  <div id="sidebar"><div id="sb-body"></div></div>
+  <div id="canvas">
+    <svg id="svg"></svg>
+    <div id="tip"></div>
+    <div id="search-wrap"><input id="q" type="text" placeholder="Search functions…"></div>
+    <div id="controls">
+      <button class="cbtn" id="btn-reset">Reset</button>
+      <button class="cbtn" id="btn-fit">Fit All</button>
+    </div>
+  </div>
+</div>
+
+<script>
+// ═══════════════════════════════════════════════════════
+// DATA
+// ═══════════════════════════════════════════════════════
+
+const CAT = {
+  entry:     { label: 'Entry',     color: '#f87171', colX: 0.12 },
+  lib:       { label: 'Library',   color: '#34d399', colX: 0.32 },
+  store:     { label: 'Store',     color: '#60a5fa', colX: 0.55 },
+  component: { label: 'Component', color: '#a78bfa', colX: 0.78 },
+};
+
+const FILES = [
+  { id: 'main.ts',                      path: 'src/main.ts',                              cat: 'entry',     label: 'main.ts' },
+  { id: 'App.svelte',                   path: 'src/App.svelte',                           cat: 'entry',     label: 'App.svelte' },
+  { id: 'lib/api.ts',                   path: 'src/lib/api.ts',                           cat: 'lib',       label: 'api.ts' },
+  { id: 'lib/tableau.ts',               path: 'src/lib/tableau.ts',                       cat: 'lib',       label: 'tableau.ts' },
+  { id: 'stores/session.svelte.ts',     path: 'src/stores/session.svelte.ts',             cat: 'store',     label: 'session.svelte.ts' },
+  { id: 'stores/status.svelte.ts',      path: 'src/stores/status.svelte.ts',              cat: 'store',     label: 'status.svelte.ts' },
+  { id: 'stores/chat.svelte.ts',        path: 'src/stores/chat.svelte.ts',                cat: 'store',     label: 'chat.svelte.ts' },
+  { id: 'stores/data.svelte.ts',        path: 'src/stores/data.svelte.ts',                cat: 'store',     label: 'data.svelte.ts' },
+  { id: 'StatusBar.svelte',             path: 'src/components/StatusBar.svelte',          cat: 'component', label: 'StatusBar.svelte' },
+  { id: 'AdminConfig.svelte',           path: 'src/components/AdminConfig.svelte',        cat: 'component', label: 'AdminConfig.svelte' },
+  { id: 'DataPanel.svelte',             path: 'src/components/DataPanel.svelte',          cat: 'component', label: 'DataPanel.svelte' },
+  { id: 'OpenWorkPanel.svelte',         path: 'src/components/OpenWorkPanel.svelte',      cat: 'component', label: 'OpenWorkPanel.svelte' },
+  { id: 'ChatPanel.svelte',             path: 'src/components/ChatPanel.svelte',          cat: 'component', label: 'ChatPanel.svelte' },
+  { id: 'MessageList.svelte',           path: 'src/components/MessageList.svelte',        cat: 'component', label: 'MessageList.svelte' },
+  { id: 'InputBar.svelte',              path: 'src/components/InputBar.svelte',           cat: 'component', label: 'InputBar.svelte' },
+  { id: 'ActionConfirm.svelte',         path: 'src/components/ActionConfirm.svelte',      cat: 'component', label: 'ActionConfirm.svelte' },
+  { id: 'WorkflowConfigPanel.svelte',   path: 'src/components/WorkflowConfigPanel.svelte',cat: 'component', label: 'WorkflowConfigPanel.svelte' },
+];
+
+const NODES = [
+  // ── Entry ──────────────────────────────────────────────────────────────────
+  {
+    id: 'main.ts::mount', file: 'main.ts', cat: 'entry', label: 'mount()',
+    desc: 'Imports App component and mounts it to the DOM element #app via createApp / new App().',
+  },
+  {
+    id: 'App.svelte::onMount', file: 'App.svelte', cat: 'entry', label: 'onMount()',
+    desc: 'App initialisation lifecycle hook: initialises Tableau extension, stores Tableau userId, creates backend session via POST /api/sessions, and fetches integration health via GET /api/status.',
+  },
+
+  // ── Library ────────────────────────────────────────────────────────────────
+  {
+    id: 'api.ts::apiFetch', file: 'lib/api.ts', cat: 'lib', label: 'apiFetch()',
+    desc: 'Generic HTTP fetch wrapper. Adds 10-second AbortController timeout. Non-2xx or network errors are wrapped into ApiError and thrown. Returns parsed JSON on success.',
+  },
+  {
+    id: 'api.ts::ApiError', file: 'lib/api.ts', cat: 'lib', label: 'ApiError',
+    desc: 'Custom Error subclass with .code, .message, and .status fields. Thrown by apiFetch on non-2xx responses or network failures.',
+  },
+  {
+    id: 'tableau.ts::initializeExtension', file: 'lib/tableau.ts', cat: 'lib', label: 'initializeExtension()',
+    desc: 'Initialises the Tableau Extensions API. Guards against double-init with an `initialized` flag. Resolves immediately in the dev/non-Tableau environment.',
+  },
+  {
+    id: 'tableau.ts::getTableauUserId', file: 'lib/tableau.ts', cat: 'lib', label: 'getTableauUserId()',
+    desc: 'Returns the Tableau current-user ID from the Extensions API, falling back to "dev-user" in dev or "unknown-user" if unavailable.',
+  },
+  {
+    id: 'tableau.ts::getWorksheetData', file: 'lib/tableau.ts', cat: 'lib', label: 'getWorksheetData()',
+    desc: 'Reads getSummaryDataAsync() for the named worksheet. Returns an array of WorksheetRow objects, or empty array in dev environment.',
+  },
+
+  // ── Stores ─────────────────────────────────────────────────────────────────
+  {
+    id: 'session.svelte.ts::sessionStore', file: 'stores/session.svelte.ts', cat: 'store', label: 'sessionStore',
+    desc: 'Svelte 5 $state singleton. Fields: sessionId (backend session token), tableauUserId (Tableau identity), tokenMap (Map<string,string> for masking pipeline).',
+  },
+  {
+    id: 'status.svelte.ts::statusStore', file: 'stores/status.svelte.ts', cat: 'store', label: 'statusStore',
+    desc: 'Svelte 5 $state singleton. Fields: integrations: IntegrationStatus[] (name, status, latency_ms, error), loading: boolean, error: string|null.',
+  },
+  {
+    id: 'chat.svelte.ts::chatStore', file: 'stores/chat.svelte.ts', cat: 'store', label: 'chatStore',
+    desc: 'Svelte 5 $state singleton. Fields: messages: ChatMessage[], chatState: idle|loading|error, pendingAction: ToolCallProposal|null. Methods: addUserMessage(), addAssistantMessage(), setPendingAction(), clearPendingAction(), setError(), clearError().',
+  },
+  {
+    id: 'data.svelte.ts::dataStore', file: 'stores/data.svelte.ts', cat: 'store', label: 'dataStore',
+    desc: 'Svelte 5 $state singleton. Fields: worksheetRows: WorksheetRow[], worksheetState, worksheetError, availableDays: number|null, tasks: TaskItem[], tasksState, tasksError.',
+  },
+  {
+    id: 'data.svelte.ts::extractAvailableDays', file: 'stores/data.svelte.ts', cat: 'store', label: 'extractAvailableDays()',
+    desc: 'Pure utility exported from data store. Reads the first WorksheetRow and searches for a column whose name includes "open" (or a specified column name) to extract the available-days number.',
+  },
+
+  // ── Components ─────────────────────────────────────────────────────────────
+  {
+    id: 'StatusBar.svelte::render', file: 'StatusBar.svelte', cat: 'component', label: 'StatusBar',
+    desc: 'Reads statusStore. Renders loading spinner, error message, or list of integration badges (healthy = green, unavailable = red) with latency_ms.',
+  },
+  {
+    id: 'AdminConfig.svelte::onMount', file: 'AdminConfig.svelte', cat: 'component', label: 'AdminConfig onMount()',
+    desc: 'Fetches the currently stored (masked) API key via GET /api/admin/credentials/{provider} and displays it in the form.',
+  },
+  {
+    id: 'AdminConfig.svelte::handleSubmit', file: 'AdminConfig.svelte', cat: 'component', label: 'AdminConfig handleSubmit()',
+    desc: 'Saves selected provider + raw API key via POST /api/admin/credentials. Shows success/error feedback inline.',
+  },
+  {
+    id: 'DataPanel.svelte::onMount', file: 'DataPanel.svelte', cat: 'component', label: 'DataPanel onMount()',
+    desc: 'Orchestration hook. First fetches worksheet config, then fans out to loadWorksheetData() and loadTasks() via Promise.allSettled(). Uses an abort-guard flag to prevent stale writes on remount.',
+  },
+  {
+    id: 'DataPanel.svelte::loadWorksheetConfig', file: 'DataPanel.svelte', cat: 'component', label: 'loadWorksheetConfig()',
+    desc: 'GET /api/config/workflow → returns { worksheetName, availableDaysColumn }. Uses apiFetch. Adds session header.',
+  },
+  {
+    id: 'DataPanel.svelte::loadWorksheetData', file: 'DataPanel.svelte', cat: 'component', label: 'loadWorksheetData()',
+    desc: 'Calls getWorksheetData(worksheetName) from tableau.ts, then calls extractAvailableDays() on the result. Writes rows and availableDays into dataStore.',
+  },
+  {
+    id: 'DataPanel.svelte::loadTasks', file: 'DataPanel.svelte', cat: 'component', label: 'loadTasks()',
+    desc: 'GET /api/data/tasks with X-Session-Id header from sessionStore. Writes task list into dataStore.tasks.',
+  },
+  {
+    id: 'OpenWorkPanel.svelte::loadOpenWork', file: 'OpenWorkPanel.svelte', cat: 'component', label: 'loadOpenWork()',
+    desc: 'GET /api/data/open-work with X-Session-Id header. Parses OpportunityItem[] response into local state for display.',
+  },
+  {
+    id: 'ChatPanel.svelte::buildSessionContext', file: 'ChatPanel.svelte', cat: 'component', label: 'buildSessionContext()',
+    desc: 'Reads dataStore.worksheetRows[0] and converts it to a flat string-to-string map for the masking pipeline. Passed as context in the chat API request body.',
+  },
+  {
+    id: 'ChatPanel.svelte::sendMessage', file: 'ChatPanel.svelte', cat: 'component', label: 'sendMessage()',
+    desc: 'Main chat send handler. Calls buildSessionContext(), adds user message to chatStore, POST /api/chat with message history + context. Handles pendingAction in response by calling chatStore.setPendingAction().',
+  },
+  {
+    id: 'ChatPanel.svelte::confirmAction', file: 'ChatPanel.svelte', cat: 'component', label: 'confirmAction()',
+    desc: 'Sends confirm_action follow-up POST /api/chat with the pendingAction payload. Clears pendingAction and appends assistant response to chatStore.',
+  },
+  {
+    id: 'ChatPanel.svelte::cancelAction', file: 'ChatPanel.svelte', cat: 'component', label: 'cancelAction()',
+    desc: 'Calls chatStore.clearPendingAction() — purely local, no API call. Dismisses the confirmation dialog.',
+  },
+  {
+    id: 'MessageList.svelte::render', file: 'MessageList.svelte', cat: 'component', label: 'MessageList',
+    desc: 'Renders ChatMessage[] prop. User messages right-aligned blue, assistant messages left-aligned grey. $effect auto-scrolls to bottom on new messages.',
+  },
+  {
+    id: 'InputBar.svelte::handleSend', file: 'InputBar.svelte', cat: 'component', label: 'InputBar handleSend()',
+    desc: 'Validates non-empty trimmed input then calls the onSend(message) prop callback and clears the textarea. Also triggered by Enter key (without Shift).',
+  },
+  {
+    id: 'ActionConfirm.svelte::render', file: 'ActionConfirm.svelte', cat: 'component', label: 'ActionConfirm',
+    desc: 'Props: action: ToolCallProposal, onConfirm(), onCancel(). Renders the display_text from the proposal with Confirm / Cancel buttons.',
+  },
+  {
+    id: 'WorkflowConfigPanel.svelte::handleSubmit', file: 'WorkflowConfigPanel.svelte', cat: 'component', label: 'WorkflowConfig handleSubmit()',
+    desc: 'Parses the textarea JSON, rejects if invalid, then POST /api/admin/config with the parsed workflow config object. Shows save/error feedback.',
+  },
+];
+
+const LINKS = [
+  // Entry → Entry
+  { s: 'main.ts::mount',                        t: 'App.svelte::onMount',                   lbl: 'mounts' },
+
+  // App initialisation
+  { s: 'App.svelte::onMount',                   t: 'tableau.ts::initializeExtension',        lbl: 'init extension' },
+  { s: 'App.svelte::onMount',                   t: 'tableau.ts::getTableauUserId',           lbl: 'get userId' },
+  { s: 'App.svelte::onMount',                   t: 'api.ts::apiFetch',                       lbl: 'POST /api/sessions' },
+  { s: 'App.svelte::onMount',                   t: 'session.svelte.ts::sessionStore',        lbl: 'writes sessionId & userId' },
+  { s: 'App.svelte::onMount',                   t: 'status.svelte.ts::statusStore',          lbl: 'writes integrations[]' },
+
+  // ApiError
+  { s: 'api.ts::apiFetch',                      t: 'api.ts::ApiError',                      lbl: 'throws' },
+
+  // StatusBar
+  { s: 'StatusBar.svelte::render',              t: 'status.svelte.ts::statusStore',          lbl: 'reads integrations[]' },
+
+  // AdminConfig
+  { s: 'AdminConfig.svelte::onMount',           t: 'api.ts::apiFetch',                       lbl: 'GET /api/admin/credentials' },
+  { s: 'AdminConfig.svelte::handleSubmit',      t: 'api.ts::apiFetch',                       lbl: 'POST /api/admin/credentials' },
+
+  // WorkflowConfigPanel
+  { s: 'WorkflowConfigPanel.svelte::handleSubmit', t: 'api.ts::apiFetch',                   lbl: 'POST /api/admin/config' },
+
+  // DataPanel orchestration
+  { s: 'DataPanel.svelte::onMount',             t: 'DataPanel.svelte::loadWorksheetConfig',  lbl: 'calls first' },
+  { s: 'DataPanel.svelte::onMount',             t: 'DataPanel.svelte::loadWorksheetData',    lbl: 'parallel' },
+  { s: 'DataPanel.svelte::onMount',             t: 'DataPanel.svelte::loadTasks',            lbl: 'parallel' },
+
+  // DataPanel internal
+  { s: 'DataPanel.svelte::loadWorksheetConfig', t: 'api.ts::apiFetch',                       lbl: 'GET /api/config/workflow' },
+  { s: 'DataPanel.svelte::loadWorksheetConfig', t: 'session.svelte.ts::sessionStore',        lbl: 'reads sessionId' },
+  { s: 'DataPanel.svelte::loadWorksheetData',   t: 'tableau.ts::getWorksheetData',           lbl: 'calls' },
+  { s: 'DataPanel.svelte::loadWorksheetData',   t: 'data.svelte.ts::extractAvailableDays',   lbl: 'calls' },
+  { s: 'DataPanel.svelte::loadWorksheetData',   t: 'data.svelte.ts::dataStore',              lbl: 'writes worksheetRows' },
+  { s: 'DataPanel.svelte::loadTasks',           t: 'api.ts::apiFetch',                       lbl: 'GET /api/data/tasks' },
+  { s: 'DataPanel.svelte::loadTasks',           t: 'session.svelte.ts::sessionStore',        lbl: 'reads sessionId' },
+  { s: 'DataPanel.svelte::loadTasks',           t: 'data.svelte.ts::dataStore',              lbl: 'writes tasks[]' },
+
+  // OpenWorkPanel
+  { s: 'OpenWorkPanel.svelte::loadOpenWork',    t: 'api.ts::apiFetch',                       lbl: 'GET /api/data/open-work' },
+  { s: 'OpenWorkPanel.svelte::loadOpenWork',    t: 'session.svelte.ts::sessionStore',        lbl: 'reads sessionId' },
+
+  // ChatPanel
+  { s: 'ChatPanel.svelte::sendMessage',         t: 'ChatPanel.svelte::buildSessionContext',  lbl: 'calls' },
+  { s: 'ChatPanel.svelte::sendMessage',         t: 'api.ts::apiFetch',                       lbl: 'POST /api/chat' },
+  { s: 'ChatPanel.svelte::sendMessage',         t: 'session.svelte.ts::sessionStore',        lbl: 'reads sessionId' },
+  { s: 'ChatPanel.svelte::sendMessage',         t: 'chat.svelte.ts::chatStore',              lbl: 'writes messages + pendingAction' },
+  { s: 'ChatPanel.svelte::buildSessionContext', t: 'data.svelte.ts::dataStore',              lbl: 'reads worksheetRows[0]' },
+  { s: 'ChatPanel.svelte::confirmAction',       t: 'api.ts::apiFetch',                       lbl: 'POST /api/chat (confirm)' },
+  { s: 'ChatPanel.svelte::confirmAction',       t: 'session.svelte.ts::sessionStore',        lbl: 'reads sessionId' },
+  { s: 'ChatPanel.svelte::confirmAction',       t: 'chat.svelte.ts::chatStore',              lbl: 'clears + writes' },
+  { s: 'ChatPanel.svelte::cancelAction',        t: 'chat.svelte.ts::chatStore',              lbl: 'clearPendingAction' },
+
+  // MessageList / ActionConfirm
+  { s: 'MessageList.svelte::render',            t: 'chat.svelte.ts::chatStore',              lbl: 'reads messages[]' },
+  { s: 'ActionConfirm.svelte::render',          t: 'chat.svelte.ts::chatStore',              lbl: 'reads pendingAction' },
+];
+
+// ═══════════════════════════════════════════════════════
+// SIDEBAR BUILD
+// ═══════════════════════════════════════════════════════
+const catOrder = ['entry', 'lib', 'store', 'component'];
+const sbBody = document.getElementById('sb-body');
+
+catOrder.forEach(cat => {
+  const catFiles = FILES.filter(f => f.cat === cat);
+  if (!catFiles.length) return;
+
+  const hdr = document.createElement('div');
+  hdr.className = 'sb-cat-header';
+  hdr.style.color = CAT[cat].color;
+  hdr.textContent = CAT[cat].label;
+  sbBody.appendChild(hdr);
+
+  catFiles.forEach(file => {
+    const wrap = document.createElement('div');
+    wrap.className = 'sb-file';
+    wrap.dataset.fid = file.id;
+
+    const fhdr = document.createElement('div');
+    fhdr.className = 'sb-file-hdr';
+    fhdr.innerHTML = `<div class="sb-dot" style="background:${CAT[cat].color}"></div>
+      <div><div class="sb-fname">${file.label}</div><div class="sb-fpath">${file.path}</div></div>`;
+    fhdr.addEventListener('click', () => highlightFile(file.id));
+    wrap.appendChild(fhdr);
+
+    const fns = NODES.filter(n => n.file === file.id);
+    if (fns.length) {
+      const ul = document.createElement('div');
+      ul.className = 'sb-fns';
+      fns.forEach(fn => {
+        const li = document.createElement('div');
+        li.className = 'sb-fn';
+        li.dataset.nid = fn.id;
+        li.textContent = fn.label;
+        li.addEventListener('click', e => { e.stopPropagation(); toggleNode(fn.id); });
+        ul.appendChild(li);
+      });
+      wrap.appendChild(ul);
+    }
+    sbBody.appendChild(wrap);
+  });
+});
+
+// ═══════════════════════════════════════════════════════
+// D3 GRAPH
+// ═══════════════════════════════════════════════════════
+const container = document.getElementById('canvas');
+const W = () => container.offsetWidth;
+const H = () => container.offsetHeight;
+
+const svg = d3.select('#svg');
+const g   = svg.append('g');
+
+// ── Arrowhead markers ─────────────────────────────────
+const defs = svg.append('defs');
+Object.entries(CAT).forEach(([key, cfg]) => {
+  ['', '-hi'].forEach(suffix => {
+    defs.append('marker')
+      .attr('id', `arr-${key}${suffix}`)
+      .attr('viewBox', '0 -4 8 8')
+      .attr('refX', 8)
+      .attr('refY', 0)
+      .attr('markerWidth', 5)
+      .attr('markerHeight', 5)
+      .attr('orient', 'auto')
+      .append('path')
+      .attr('d', 'M0,-4L8,0L0,4')
+      .attr('fill', cfg.color)
+      .attr('opacity', suffix ? 1 : 0.6);
+  });
+});
+
+// ── Column background strips ──────────────────────────
+const colData = Object.entries(CAT).map(([k, v]) => ({ key: k, ...v }));
+const colBg = g.append('g').attr('class', 'col-bgs');
+const colLbls = g.append('g').attr('class', 'col-lbls');
+
+// ── Node + link data ──────────────────────────────────
+const nodeById = new Map(NODES.map(n => [n.id, { ...n }]));
+
+const linkData = LINKS.map(l => ({
+  ...l,
+  source: nodeById.get(l.s),
+  target: nodeById.get(l.t),
+})).filter(l => l.source && l.target);
+
+// ── Assign initial x based on category column ─────────
+NODES.forEach(n => {
+  n.x = CAT[n.cat].colX * W() + (Math.random() - 0.5) * 60;
+  n.y = H() / 2 + (Math.random() - 0.5) * (H() * 0.7);
+});
+const nodeData = NODES;
+
+// ── Force simulation ──────────────────────────────────
+const sim = d3.forceSimulation(nodeData)
+  .force('link',    d3.forceLink(linkData).id(d => d.id).distance(140).strength(0.25))
+  .force('charge',  d3.forceManyBody().strength(-320))
+  .force('collide', d3.forceCollide(38))
+  .force('x',       d3.forceX(d => CAT[d.cat].colX * W()).strength(0.55))
+  .force('y',       d3.forceY(d => H() / 2).strength(0.05));
+
+// ── Edge count per pair (for curved offsets) ──────────
+const pairCount = new Map();
+const pairIndex = new Map();
+linkData.forEach(l => {
+  const key = [l.source.id, l.target.id].sort().join('||');
+  pairCount.set(key, (pairCount.get(key) || 0) + 1);
+});
+const tempCount = new Map();
+linkData.forEach(l => {
+  const key = [l.source.id, l.target.id].sort().join('||');
+  const idx = tempCount.get(key) || 0;
+  pairIndex.set(l, idx);
+  tempCount.set(key, idx + 1);
+});
+
+// ── Draw edges ────────────────────────────────────────
+const edgeG = g.append('g').attr('class', 'edges');
+const edgeSel = edgeG.selectAll('g').data(linkData).enter().append('g');
+
+const edgePath = edgeSel.append('path')
+  .attr('class', 'edge')
+  .attr('stroke', d => CAT[d.source.cat]?.color || '#4a5568')
+  .attr('stroke-width', 1.2)
+  .attr('marker-end', d => `url(#arr-${d.source.cat})`);
+
+const edgeLbl = edgeSel.append('text')
+  .attr('class', 'edge-lbl')
+  .text(d => d.lbl);
+
+// ── Draw nodes ────────────────────────────────────────
+const R = 16; // circle radius
+
+const nodeG = g.append('g').attr('class', 'nodes')
+  .selectAll('g')
+  .data(nodeData)
+  .enter().append('g')
+  .attr('class', 'node-g')
+  .style('--nc', d => CAT[d.cat].color)
+  .call(d3.drag()
+    .on('start', (e, d) => { if (!e.active) sim.alphaTarget(0.3).restart(); d.fx = d.x; d.fy = d.y; })
+    .on('drag',  (e, d) => { d.fx = e.x; d.fy = e.y; })
+    .on('end',   (e, d) => { if (!e.active) sim.alphaTarget(0); d.fx = null; d.fy = null; }))
+  .on('click', (e, d) => { e.stopPropagation(); toggleNode(d.id); })
+  .on('mouseover', showTip)
+  .on('mousemove', moveTip)
+  .on('mouseout',  hideTip);
+
+nodeG.append('circle')
+  .attr('class', 'node-circle')
+  .attr('r', R)
+  .attr('fill', d => CAT[d.cat].color + '22')
+  .attr('stroke', d => CAT[d.cat].color)
+  .attr('stroke-width', 1.5);
+
+// Short label inside circle
+nodeG.append('text')
+  .attr('class', 'node-txt')
+  .attr('dy', 3)
+  .attr('text-anchor', 'middle')
+  .attr('font-size', '8px')
+  .attr('font-family', 'ui-monospace, SFMono-Regular, monospace')
+  .attr('fill', d => CAT[d.cat].color)
+  .text(d => {
+    const s = d.label.replace(/\(\)$/, '').replace(/^(.*)\s/, '$1');
+    return s.length > 9 ? s.slice(0, 8) + '…' : s;
+  });
+
+// Label below circle
+nodeG.append('text')
+  .attr('class', 'node-txt')
+  .attr('dy', R + 12)
+  .attr('text-anchor', 'middle')
+  .attr('font-size', '9px')
+  .attr('font-family', 'ui-monospace, SFMono-Regular, monospace')
+  .attr('fill', '#8b949e')
+  .text(d => d.label);
+
+// ── Tick ──────────────────────────────────────────────
+sim.on('tick', () => {
+  edgePath.attr('d', d => {
+    const sx = d.source.x, sy = d.source.y;
+    const tx = d.target.x, ty = d.target.y;
+    const dx = tx - sx, dy = ty - sy;
+    const dist = Math.hypot(dx, dy) || 1;
+    const nx = dx / dist, ny = dy / dist;
+
+    // Shorten at target to stop at circle edge
+    const ex = tx - nx * (R + 3);
+    const ey = ty - ny * (R + 3);
+    // Shorten at source too
+    const bx = sx + nx * (R + 3);
+    const by = sy + ny * (R + 3);
+
+    // Curved offset for multi-edges between same pair
+    const key = [d.source.id, d.target.id].sort().join('||');
+    const total = pairCount.get(key) || 1;
+    const idx   = pairIndex.get(d) || 0;
+    const offset = total > 1 ? ((idx - (total - 1) / 2) * 28) : 0;
+
+    const mx = (bx + ex) / 2 - ny * offset;
+    const my = (by + ey) / 2 + nx * offset;
+    return `M${bx},${by} Q${mx},${my} ${ex},${ey}`;
+  });
+
+  edgeLbl
+    .attr('x', d => (d.source.x + d.target.x) / 2)
+    .attr('y', d => (d.source.y + d.target.y) / 2 - 5);
+
+  nodeG.attr('transform', d => `translate(${d.x},${d.y})`);
+
+  updateColBgs();
+});
+
+// ── Column background rectangles ─────────────────────
+function updateColBgs() {
+  const catGroups = d3.group(nodeData, d => d.cat);
+  const rects = colData.map(col => {
+    const ns = catGroups.get(col.key) || [];
+    if (!ns.length) return null;
+    const xs = ns.map(n => n.x), ys = ns.map(n => n.y);
+    const pad = 36;
+    return {
+      key: col.key, color: col.color, label: col.label,
+      x: Math.min(...xs) - pad,
+      y: Math.min(...ys) - pad,
+      w: Math.max(...xs) - Math.min(...xs) + pad * 2,
+      h: Math.max(...ys) - Math.min(...ys) + pad * 2,
+    };
+  }).filter(Boolean);
+
+  colBg.selectAll('rect').data(rects, d => d.key)
+    .join('rect')
+    .attr('x', d => d.x).attr('y', d => d.y)
+    .attr('width', d => d.w).attr('height', d => d.h)
+    .attr('rx', 12)
+    .attr('fill', d => d.color + '0a')
+    .attr('stroke', d => d.color + '18')
+    .attr('stroke-width', 1)
+    .attr('stroke-dasharray', '4 4');
+
+  colLbls.selectAll('text').data(rects, d => d.key)
+    .join('text')
+    .attr('class', 'col-lbl')
+    .attr('x', d => d.x + d.w / 2)
+    .attr('y', d => d.y + 16)
+    .attr('text-anchor', 'middle')
+    .attr('fill', d => d.color)
+    .text(d => d.label.toUpperCase());
+}
+
+// ── Zoom / pan ────────────────────────────────────────
+const zoom = d3.zoom().scaleExtent([0.08, 5]).on('zoom', e => g.attr('transform', e.transform));
+svg.call(zoom);
+svg.on('click', () => clearHighlight());
+
+// ── Fit all ───────────────────────────────────────────
+function fitAll() {
+  const b = g.node().getBBox();
+  if (!b.width || !b.height) return;
+  const pad = 40;
+  const scale = Math.min((W() - pad * 2) / b.width, (H() - pad * 2) / b.height, 1.5);
+  const tx = W() / 2 - scale * (b.x + b.width / 2);
+  const ty = H() / 2 - scale * (b.y + b.height / 2);
+  svg.transition().duration(700).call(zoom.transform, d3.zoomIdentity.translate(tx, ty).scale(scale));
+}
+
+sim.on('end', () => setTimeout(fitAll, 50));
+
+document.getElementById('btn-fit').addEventListener('click', fitAll);
+document.getElementById('btn-reset').addEventListener('click', () => {
+  clearHighlight();
+  svg.transition().duration(500).call(zoom.transform, d3.zoomIdentity);
+});
+
+// ═══════════════════════════════════════════════════════
+// HIGHLIGHT
+// ═══════════════════════════════════════════════════════
+let activeNode = null;
+
+function toggleNode(id) {
+  if (activeNode === id) { clearHighlight(); return; }
+  activeNode = id;
+  applyHighlight(new Set([id]), 'node');
+  syncSidebar(id);
+}
+
+function highlightFile(fileId) {
+  activeNode = null;
+  const ids = new Set(NODES.filter(n => n.file === fileId).map(n => n.id));
+  applyHighlight(ids, 'file');
+  document.querySelectorAll('.sb-fn').forEach(el => {
+    el.classList.toggle('active', ids.has(el.dataset.nid));
+  });
+}
+
+function applyHighlight(seedIds, mode) {
+  const connected = new Set(seedIds);
+  const edgeSet   = new Set();
+
+  linkData.forEach((l, i) => {
+    const inSeed = seedIds.has(l.source.id) || seedIds.has(l.target.id);
+    if (inSeed) {
+      connected.add(l.source.id);
+      connected.add(l.target.id);
+      edgeSet.add(i);
+    }
+  });
+
+  nodeG.classed('hi',  d => seedIds.has(d.id))
+       .classed('dim', d => !connected.has(d.id));
+
+  edgeSel.classed('hi',  (d, i) => edgeSet.has(i))
+         .classed('dim', (d, i) => !edgeSet.has(i));
+
+  edgeLbl.classed('hi',  (d, i) => edgeSet.has(i))
+         .classed('dim', (d, i) => !edgeSet.has(i));
+
+  edgePath.attr('marker-end', (d, i) =>
+    edgeSet.has(i) ? `url(#arr-${d.source.cat}-hi)` : `url(#arr-${d.source.cat})`);
+}
+
+function clearHighlight() {
+  activeNode = null;
+  nodeG.classed('hi', false).classed('dim', false);
+  edgeSel.classed('hi', false).classed('dim', false);
+  edgeLbl.classed('hi', false).classed('dim', false);
+  edgePath.attr('marker-end', d => `url(#arr-${d.source.cat})`);
+  document.querySelectorAll('.sb-fn').forEach(el => el.classList.remove('active'));
+}
+
+function syncSidebar(id) {
+  document.querySelectorAll('.sb-fn').forEach(el => {
+    el.classList.toggle('active', el.dataset.nid === id);
+  });
+}
+
+// ═══════════════════════════════════════════════════════
+// TOOLTIP
+// ═══════════════════════════════════════════════════════
+const tip = document.getElementById('tip');
+let tipNode = null;
+
+function showTip(e, d) {
+  tipNode = d;
+  const outs = linkData.filter(l => l.source.id === d.id);
+  const ins  = linkData.filter(l => l.target.id === d.id);
+
+  let html = `<div class="t-title">${d.label}</div>
+    <div class="t-file">${d.file}</div>
+    <div class="t-desc">${d.desc}</div>`;
+
+  if (outs.length) {
+    html += `<div class="t-section"><div class="t-sec-lbl">Calls / writes</div>`;
+    outs.forEach(l => { html += `<div class="t-row">→ ${l.target.label} <span>${l.lbl}</span></div>`; });
+    html += '</div>';
+  }
+  if (ins.length) {
+    html += `<div class="t-section"><div class="t-sec-lbl">Called / read by</div>`;
+    ins.forEach(l => { html += `<div class="t-row">← ${l.source.label} <span>${l.lbl}</span></div>`; });
+    html += '</div>';
+  }
+
+  tip.innerHTML = html;
+  tip.style.display = 'block';
+  positionTip(e);
+}
+
+function moveTip(e) { if (tipNode) positionTip(e); }
+function hideTip()  { tip.style.display = 'none'; tipNode = null; }
+
+function positionTip(e) {
+  const r = container.getBoundingClientRect();
+  let x = e.clientX - r.left + 14, y = e.clientY - r.top - 10;
+  if (x + 280 > r.width)  x -= 300;
+  if (y + 260 > r.height) y -= 240;
+  tip.style.left = x + 'px';
+  tip.style.top  = y + 'px';
+}
+
+// ═══════════════════════════════════════════════════════
+// SEARCH
+// ═══════════════════════════════════════════════════════
+document.getElementById('q').addEventListener('input', e => {
+  const q = e.target.value.trim().toLowerCase();
+  if (!q) { clearHighlight(); return; }
+  const matched = new Set(
+    NODES.filter(n =>
+      n.label.toLowerCase().includes(q) ||
+      n.file.toLowerCase().includes(q) ||
+      n.desc.toLowerCase().includes(q)
+    ).map(n => n.id)
+  );
+  if (matched.size === 0) return;
+  applyHighlight(matched, 'search');
+  document.querySelectorAll('.sb-fn').forEach(el => {
+    el.classList.toggle('active', matched.has(el.dataset.nid));
+  });
+});
+
+// ═══════════════════════════════════════════════════════
+// RESIZE
+// ═══════════════════════════════════════════════════════
+window.addEventListener('resize', () => {
+  sim.force('x', d3.forceX(d => CAT[d.cat].colX * W()).strength(0.55))
+     .force('y', d3.forceY(H() / 2).strength(0.05))
+     .alpha(0.3).restart();
+});
+</script>
+</body>
+</html>

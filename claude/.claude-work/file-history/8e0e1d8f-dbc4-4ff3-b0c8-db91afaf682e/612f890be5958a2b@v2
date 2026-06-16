@@ -1,0 +1,20 @@
+def check_capacity(available_days: float, required_days: float) -> dict:
+    """Return capacity check result applying a 5% commitment buffer.
+
+    Args:
+        available_days: Consultant's open days from Tableau data.
+        required_days: Days the opportunity requires (from opportunity details).
+
+    Returns:
+        dict with keys: can_commit, available_days, required_days,
+        required_with_buffer, shortfall. All floats rounded to 2dp.
+    """
+    required_with_buffer = round(required_days * 1.05, 2)
+    shortfall = round(max(0.0, required_with_buffer - available_days), 2)
+    return {
+        "can_commit": available_days >= required_with_buffer,
+        "available_days": available_days,
+        "required_days": required_days,
+        "required_with_buffer": required_with_buffer,
+        "shortfall": shortfall,
+    }

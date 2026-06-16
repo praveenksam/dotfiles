@@ -1,0 +1,27 @@
+from typing import Any, Literal
+
+from pydantic import BaseModel, field_validator
+
+from app.schemas.status import Meta
+
+
+class CredentialUpsertRequest(BaseModel):
+    provider: Literal["openai", "anthropic"]
+    api_key: str
+
+    @field_validator("api_key")
+    @classmethod
+    def api_key_not_empty(cls, v: str) -> str:
+        if not v.strip():
+            raise ValueError("api_key must not be blank")
+        return v
+
+
+class CredentialUpsertResponse(BaseModel):
+    data: dict[str, Any]
+    meta: Meta
+
+
+class CredentialGetResponse(BaseModel):
+    data: dict[str, Any]
+    meta: Meta

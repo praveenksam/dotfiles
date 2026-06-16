@@ -1,0 +1,20 @@
+/**
+ * Status store — holds integration health check results.
+ * Populated once on extension load from GET /api/status.
+ * Resets on every extension load.
+ */
+
+export interface IntegrationStatus {
+  name: string;
+  status: 'healthy' | 'unavailable';
+  latency_ms: number | null;
+  error: string | null;
+}
+
+class StatusStore {
+  integrations = $state<IntegrationStatus[]>([]);
+  loading = $state(false);
+  error = $state<string | null>(null);
+}
+
+export const statusStore = new StatusStore();

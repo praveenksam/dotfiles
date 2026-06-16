@@ -1,0 +1,134 @@
+"""
+Token masking and rehydration pipeline for the autom9 agent.
+
+This module is the ONLY place where PII masking/rehydration logic lives.
+It must NEVER be inlined in orchestration code.
+
+ARC-9: 100% branch coverage is a hard acceptance gate for this file.
+"""
+from __future__ import annotations
+
+
+class MaskingError(Exception):
+    """Raised when masking is attempted on invalid input."""
+
+
+# Category → token prefix mapping.
+# "generic" is intentionally absent — it hits the .get() default branch ("VALUE").
+_CATEGORY_PREFIXES: dict[str, str] = {
+    "consultant": "CONSULTANT",
+    "client": "CLIENT",
+    "engagement": "ENGAGEMENT",
+}
+
+
+class TokenMap:
+    """Session-scoped bidirectional mapping of opaque tokens ↔ real values.
+
+    Lifecycle: created at session start, reset on every extension load.
+    Never persisted to any storage — in-memory only.
+    Thread-safe for single-process async use (Python GIL + no concurrent writes).
+    """
+
+    def __init__(self) -> None:
+        self._token_to_real: dict[str, str] = {}
+        self._real_to_token: dict[str, str] = {}
+        self._counters: dict[str, int] = {}
+
+    def register(self, real_value: str, category: str = "generic") -> str:
+        """Return the opaque token for *real_value*, registering it if not yet seen.
+
+        Idempotent: the same real value always maps to the same token within a session.
+        Raises MaskingError if *real_value* is empty.
+        """
+        if not real_value or not real_value.strip():
+            raise MaskingError("Cannot mask empty value")
+        if real_value in self._real_to_token:
+            return self._real_to_token[real_value]
+        prefix = _CATEGORY_PREFIXES.get(category, "VALUE")
+        count = self._counters.get(prefix, 0) + 1
+        self._counters[prefix] = count
+        token = f"{prefix}_{count:03d}"
+        self._token_to_real[token] = real_value
+        self._real_to_token[real_value] = token
+        return token
+
+    def rehydrate(self, text: str) -> str:
+        """Replace all known tokens in *text* with their real values.
+
+        Returns *text* unchanged if empty or if no tokens are present.
+        """
+        if not text:
+            return text
+        result = text
+        for token, real in self._token_to_real.items():
+            result = result.replace(token, real)
+        return result
+
+    def reset(self) -> None:
+        """Clear all mappings. Called at session end / extension reload."""
+        self._token_to_real.clear()
+        self._real_to_token.clear()
+        self._counters.clear()
+
+    @property
+    def is_empty(self) -> bool:
+        """True if no values have been registered yet."""
+        return not bool(self._token_to_real)
+
+
+def _infer_category(field_name: str) -> str:
+    """Infer the masking category from a field name (case-insensitive substring match).
+
+    Rules (first match wins):
+    - "consultant" in name → "consultant"
+    - "client" in name     → "client"
+    - "engagement" in name → "engagement"
+    - otherwise            → "generic"
+    """
+    lower = field_name.lower()
+    if "consultant" in lower:
+        return "consultant"
+    if "client" in lower:
+        return "client"
+    if "engagement" in lower:
+        return "engagement"
+    return "generic"
+
+
+def mask_fields(fields: dict[str, str], token_map: TokenMap) -> dict[str, str]:
+    """Mask a dict of {field_name: real_value} pairs.
+
+    Category is inferred from the field name via `_infer_category`.
+    Returns a new dict with the same keys and token values.
+    Empty *fields* dict → returns empty dict.
+    """
+    return {
+        field_name: token_map.register(real_value, _infer_category(field_name))
+        for field_name, real_value in fields.items()
+    }
+
+
+def mask_text(text: str, token_map: TokenMap) -> str:
+    """Replace any registered real values that appear in *text* with their tokens.
+
+    Applies longest-match-first to prevent partial substitutions
+    (e.g. "Acme Corp" masked before "Acme" if both are registered).
+    Returns *text* unchanged if empty.
+    """
+    if not text:
+        return text
+    result = text
+    for real, token in sorted(token_map._real_to_token.items(), key=lambda kv: -len(kv[0])):
+        result = result.replace(real, token)
+    return result
+
+
+def rehydrate_text(text: str, token_map: TokenMap) -> str:
+    """Replace all known tokens in *text* with their real values.
+
+    Thin wrapper around `TokenMap.rehydrate` — callers should use this function
+    rather than calling `token_map.rehydrate` directly, so all rehydration flows
+    through the same entry point for future auditing.
+    """
+    return token_map.rehydrate(text)

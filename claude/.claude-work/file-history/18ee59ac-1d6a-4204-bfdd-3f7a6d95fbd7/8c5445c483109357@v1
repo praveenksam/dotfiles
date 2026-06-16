@@ -1,0 +1,136 @@
+<script lang="ts">
+  import { onMount } from 'svelte';
+  import { apiFetch } from '../lib/api';
+  import WorkflowConfigPanel from './WorkflowConfigPanel.svelte';
+
+  let provider = $state<'openai' | 'anthropic'>('openai');
+  let apiKey = $state('');
+  let saving = $state(false);
+  let saved = $state(false);
+  let errorMsg = $state('');
+  let existingMasked = $state<string | null>(null);
+
+  onMount(async () => {
+    try {
+      const res = await apiFetch<{ data: { provider: string; masked_key: string } }>(
+        `/api/admin/credentials/${provider}`,
+      );
+      existingMasked = res.data.masked_key;
+    } catch {
+      // 404 = no credentials stored yet — show empty form
+      existingMasked = null;
+    }
+  });
+
+  async function handleSubmit(e: SubmitEvent) {
+    e.preventDefault();
+    saving = true;
+    saved = false;
+    errorMsg = '';
+    try {
+      await apiFetch('/api/admin/credentials', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ provider, api_key: apiKey }),
+      });
+      saved = true;
+      apiKey = '';
+      existingMasked = '••••••••';
+    } catch (err) {
+      errorMsg = err instanceof Error ? err.message : 'Failed to save credentials';
+    } finally {
+      saving = false;
+    }
+  }
+</script>
+
+<form onsubmit={handleSubmit} class="admin-config">
+  <h2>BYOM Credential Setup</h2>
+
+  <label>
+    LLM Provider
+    <select bind:value={provider}>
+      <option value="openai">OpenAI</option>
+      <option value="anthropic">Anthropic</option>
+    </select>
+  </label>
+
+  <label>
+    API Key
+    {#if existingMasked && !apiKey}
+      <p class="existing-key">Current key: {existingMasked}</p>
+    {/if}
+    <input
+      type="password"
+      bind:value={apiKey}
+      placeholder={existingMasked ? 'Enter new key to replace existing' : 'Paste API key here'}
+      autocomplete="off"
+      required
+    />
+  </label>
+
+  {#if saved}
+    <p class="success">Credentials saved.</p>
+  {/if}
+  {#if errorMsg}
+    <p class="error">{errorMsg}</p>
+  {/if}
+
+  <button type="submit" disabled={saving}>
+    {saving ? 'Saving…' : 'Save Credentials'}
+  </button>
+</form>
+
+<WorkflowConfigPanel />
+
+<style>
+  .admin-config {
+    font-family: sans-serif;
+    padding: 1.5rem;
+    max-width: 480px;
+    display: flex;
+    flex-direction: column;
+    gap: 1rem;
+  }
+  label {
+    display: flex;
+    flex-direction: column;
+    gap: 0.25rem;
+    font-size: 0.875rem;
+    font-weight: 500;
+  }
+  select,
+  input {
+    padding: 0.5rem;
+    border: 1px solid #ccc;
+    border-radius: 4px;
+    font-size: 1rem;
+  }
+  button {
+    padding: 0.5rem 1rem;
+    background: #0057b8;
+    color: #fff;
+    border: none;
+    border-radius: 4px;
+    cursor: pointer;
+    font-size: 1rem;
+  }
+  button:disabled {
+    opacity: 0.6;
+    cursor: not-allowed;
+  }
+  .existing-key {
+    font-size: 0.8rem;
+    color: #555;
+    margin: 0 0 0.25rem;
+    font-family: monospace;
+  }
+  .success {
+    color: #1a7a1a;
+    margin: 0;
+  }
+  .error {
+    color: #c00;
+    margin: 0;
+  }
+</style>

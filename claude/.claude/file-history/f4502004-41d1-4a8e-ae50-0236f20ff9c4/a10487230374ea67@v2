@@ -1,0 +1,32 @@
+from abc import ABC, abstractmethod
+from dataclasses import dataclass
+from typing import AsyncIterator
+
+
+@dataclass
+class LLMResponse:
+    content: str
+    tool_calls: list[dict]
+    finish_reason: str
+
+
+class LLMProvider(ABC):
+    """
+    BYOM provider interface. All providers implement complete().
+    stream() raises NotImplementedError in v1 — interface set for future streaming.
+    """
+
+    @abstractmethod
+    async def complete(self, messages: list[dict], tools: list[dict]) -> LLMResponse:
+        """
+        Send messages to the LLM and return a complete response.
+        Applies exponential backoff with jitter, 3 retries max, on 429 or transient errors.
+        Raises ProviderError after exhausting retries.
+        """
+        ...
+
+    async def stream(self, messages: list[dict], tools: list[dict]) -> AsyncIterator[str]:
+        """Streaming not implemented in v1."""
+        raise NotImplementedError("Streaming not supported in v1")
+        if False:  # satisfy type checker
+            yield ""

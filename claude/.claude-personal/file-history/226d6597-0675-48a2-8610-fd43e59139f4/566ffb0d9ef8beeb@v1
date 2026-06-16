@@ -1,0 +1,351 @@
+import time
+import pytest
+from unittest.mock import AsyncMock, MagicMock, patch
+
+from app.core.exceptions import IntegrationError
+from app.integrations.google_calendar import GoogleCalendarIntegration
+
+pytestmark = pytest.mark.asyncio(loop_scope="session")
+
+
+# ---------------------------------------------------------------------------
+# health_check — not configured
+# ---------------------------------------------------------------------------
+
+
+async def test_health_check_no_client_id(monkeypatch):
+    monkeypatch.setattr("app.integrations.google_calendar.settings.GOOGLE_CALENDAR_CLIENT_ID", None)
+    monkeypatch.setattr("app.integrations.google_calendar.settings.GOOGLE_CALENDAR_CLIENT_SECRET", "s")
+    monkeypatch.setattr("app.integrations.google_calendar.settings.GOOGLE_CALENDAR_REFRESH_TOKEN", "r")
+    result = await GoogleCalendarIntegration().health_check()
+    assert result.status == "unavailable"
+    assert "GOOGLE_CALENDAR_CLIENT_ID" in (result.error or "")
+
+
+async def test_health_check_no_client_secret(monkeypatch):
+    monkeypatch.setattr("app.integrations.google_calendar.settings.GOOGLE_CALENDAR_CLIENT_ID", "cid")
+    monkeypatch.setattr("app.integrations.google_calendar.settings.GOOGLE_CALENDAR_CLIENT_SECRET", None)
+    monkeypatch.setattr("app.integrations.google_calendar.settings.GOOGLE_CALENDAR_REFRESH_TOKEN", "r")
+    result = await GoogleCalendarIntegration().health_check()
+    assert result.status == "unavailable"
+    assert "GOOGLE_CALENDAR_CLIENT_SECRET" in (result.error or "")
+
+
+async def test_health_check_no_refresh_token(monkeypatch):
+    monkeypatch.setattr("app.integrations.google_calendar.settings.GOOGLE_CALENDAR_CLIENT_ID", "cid")
+    monkeypatch.setattr("app.integrations.google_calendar.settings.GOOGLE_CALENDAR_CLIENT_SECRET", "cs")
+    monkeypatch.setattr("app.integrations.google_calendar.settings.GOOGLE_CALENDAR_REFRESH_TOKEN", None)
+    result = await GoogleCalendarIntegration().health_check()
+    assert result.status == "unavailable"
+    assert "GOOGLE_CALENDAR_REFRESH_TOKEN" in (result.error or "")
+
+
+# ---------------------------------------------------------------------------
+# health_check — configured
+# ---------------------------------------------------------------------------
+
+
+def _configured(monkeypatch):
+    monkeypatch.setattr("app.integrations.google_calendar.settings.GOOGLE_CALENDAR_CLIENT_ID", "cid")
+    monkeypatch.setattr("app.integrations.google_calendar.settings.GOOGLE_CALENDAR_CLIENT_SECRET", "cs")
+    monkeypatch.setattr("app.integrations.google_calendar.settings.GOOGLE_CALENDAR_REFRESH_TOKEN", "rt")
+    monkeypatch.setattr("app.integrations.google_calendar.settings.GOOGLE_CALENDAR_ID", "primary")
+
+
+async def test_health_check_ok(monkeypatch):
+    _configured(monkeypatch)
+    token_response = MagicMock()
+    token_response.status_code = 200
+    token_response.json.return_value = {"access_token": "tok", "expires_in": 3600}
+
+    calendar_response = MagicMock()
+    calendar_response.status_code = 200
+
+    mock_client = AsyncMock()
+    mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+    mock_client.__aexit__ = AsyncMock(return_value=False)
+    mock_client.post = AsyncMock(return_value=token_response)
+    mock_client.get = AsyncMock(return_value=calendar_response)
+
+    with patch("app.integrations.google_calendar.httpx.AsyncClient", return_value=mock_client):
+        result = await GoogleCalendarIntegration().health_check()
+
+    assert result.status == "healthy"
+    assert result.error is None
+
+
+async def test_health_check_token_refresh_fails(monkeypatch):
+    _configured(monkeypatch)
+    token_response = MagicMock()
+    token_response.status_code = 401
+
+    mock_client = AsyncMock()
+    mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+    mock_client.__aexit__ = AsyncMock(return_value=False)
+    mock_client.post = AsyncMock(return_value=token_response)
+
+    with patch("app.integrations.google_calendar.httpx.AsyncClient", return_value=mock_client):
+        result = await GoogleCalendarIntegration().health_check()
+
+    assert result.status == "unavailable"
+    assert "401" in (result.error or "")
+
+
+async def test_health_check_calendar_api_error(monkeypatch):
+    _configured(monkeypatch)
+    token_response = MagicMock()
+    token_response.status_code = 200
+    token_response.json.return_value = {"access_token": "tok", "expires_in": 3600}
+
+    calendar_response = MagicMock()
+    calendar_response.status_code = 403
+
+    mock_client = AsyncMock()
+    mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+    mock_client.__aexit__ = AsyncMock(return_value=False)
+    mock_client.post = AsyncMock(return_value=token_response)
+    mock_client.get = AsyncMock(return_value=calendar_response)
+
+    with patch("app.integrations.google_calendar.httpx.AsyncClient", return_value=mock_client):
+        result = await GoogleCalendarIntegration().health_check()
+
+    assert result.status == "unavailable"
+    assert "403" in (result.error or "")
+
+
+# ---------------------------------------------------------------------------
+# execute — not configured / unknown action
+# ---------------------------------------------------------------------------
+
+
+async def test_execute_not_configured_raises(monkeypatch):
+    monkeypatch.setattr("app.integrations.google_calendar.settings.GOOGLE_CALENDAR_CLIENT_ID", None)
+    monkeypatch.setattr("app.integrations.google_calendar.settings.GOOGLE_CALENDAR_CLIENT_SECRET", None)
+    monkeypatch.setattr("app.integrations.google_calendar.settings.GOOGLE_CALENDAR_REFRESH_TOKEN", None)
+    with pytest.raises(IntegrationError) as exc_info:
+        await GoogleCalendarIntegration().execute("create_invite", {})
+    assert exc_info.value.integration == "google_calendar"
+
+
+async def test_execute_unknown_action_raises(monkeypatch):
+    _configured(monkeypatch)
+    with pytest.raises(IntegrationError) as exc_info:
+        await GoogleCalendarIntegration().execute("delete_event", {})
+    assert "Unknown action" in str(exc_info.value)
+
+
+# ---------------------------------------------------------------------------
+# execute — missing required params
+# ---------------------------------------------------------------------------
+
+
+async def test_execute_missing_title_raises(monkeypatch):
+    _configured(monkeypatch)
+    with pytest.raises(IntegrationError) as exc_info:
+        await GoogleCalendarIntegration().execute(
+            "create_invite",
+            {"start_datetime": "2026-05-01T09:00:00Z", "end_datetime": "2026-05-01T10:00:00Z"},
+        )
+    assert "title" in str(exc_info.value)
+
+
+async def test_execute_missing_start_datetime_raises(monkeypatch):
+    _configured(monkeypatch)
+    with pytest.raises(IntegrationError) as exc_info:
+        await GoogleCalendarIntegration().execute(
+            "create_invite",
+            {"title": "Planning block", "end_datetime": "2026-05-01T10:00:00Z"},
+        )
+    assert "start_datetime" in str(exc_info.value)
+
+
+# ---------------------------------------------------------------------------
+# execute — success
+# ---------------------------------------------------------------------------
+
+
+async def test_execute_create_invite_success(monkeypatch):
+    _configured(monkeypatch)
+    token_response = MagicMock()
+    token_response.status_code = 200
+    token_response.json.return_value = {"access_token": "tok", "expires_in": 3600}
+
+    event_response = MagicMock()
+    event_response.status_code = 200
+    event_response.json.return_value = {
+        "id": "event123",
+        "htmlLink": "https://calendar.google.com/event?eid=event123",
+    }
+
+    mock_client = AsyncMock()
+    mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+    mock_client.__aexit__ = AsyncMock(return_value=False)
+    mock_client.post = AsyncMock(side_effect=[token_response, event_response])
+
+    with patch("app.integrations.google_calendar.httpx.AsyncClient", return_value=mock_client):
+        integration = GoogleCalendarIntegration()
+        result = await integration.execute(
+            "create_invite",
+            {
+                "title": "Project kickoff",
+                "start_datetime": "2026-05-01T09:00:00Z",
+                "end_datetime": "2026-05-01T10:00:00Z",
+                "description": "Initial meeting",
+                "timezone": "Europe/Berlin",
+            },
+        )
+
+    assert result["status"] == "created"
+    assert result["event_id"] == "event123"
+    assert "html_link" in result
+
+    post_calls = mock_client.post.call_args_list
+    event_call = post_calls[1]
+    sent_json = event_call.kwargs["json"]
+    assert sent_json["summary"] == "Project kickoff"
+    assert sent_json["start"]["dateTime"] == "2026-05-01T09:00:00Z"
+    assert sent_json["start"]["timeZone"] == "Europe/Berlin"
+    assert sent_json["description"] == "Initial meeting"
+
+
+async def test_execute_title_alias_summary(monkeypatch):
+    """'summary' is accepted as an alias for 'title'."""
+    _configured(monkeypatch)
+    token_response = MagicMock()
+    token_response.status_code = 200
+    token_response.json.return_value = {"access_token": "tok", "expires_in": 3600}
+
+    event_response = MagicMock()
+    event_response.status_code = 200
+    event_response.json.return_value = {"id": "ev1", "htmlLink": ""}
+
+    mock_client = AsyncMock()
+    mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+    mock_client.__aexit__ = AsyncMock(return_value=False)
+    mock_client.post = AsyncMock(side_effect=[token_response, event_response])
+
+    with patch("app.integrations.google_calendar.httpx.AsyncClient", return_value=mock_client):
+        result = await GoogleCalendarIntegration().execute(
+            "create_invite",
+            {
+                "summary": "Engagement block",
+                "start_datetime": "2026-05-01T09:00:00Z",
+                "end_datetime": "2026-05-01T10:00:00Z",
+            },
+        )
+    assert result["status"] == "created"
+
+
+async def test_execute_token_cache_used_on_second_call(monkeypatch):
+    """Access token is cached — token endpoint called only once for two executes."""
+    _configured(monkeypatch)
+    token_response = MagicMock()
+    token_response.status_code = 200
+    token_response.json.return_value = {"access_token": "tok", "expires_in": 3600}
+
+    event_response = MagicMock()
+    event_response.status_code = 200
+    event_response.json.return_value = {"id": "ev1", "htmlLink": ""}
+
+    token_call_count = 0
+    post_calls_urls: list[str] = []
+
+    async def fake_post(url, **kwargs):
+        nonlocal token_call_count
+        post_calls_urls.append(url)
+        if "oauth2.googleapis.com" in url:
+            token_call_count += 1
+            return token_response
+        return event_response
+
+    mock_client = AsyncMock()
+    mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+    mock_client.__aexit__ = AsyncMock(return_value=False)
+    mock_client.post = fake_post
+
+    with patch("app.integrations.google_calendar.httpx.AsyncClient", return_value=mock_client):
+        integration = GoogleCalendarIntegration()
+        params = {
+            "title": "Block A",
+            "start_datetime": "2026-05-01T09:00:00Z",
+            "end_datetime": "2026-05-01T10:00:00Z",
+        }
+        await integration.execute("create_invite", params)
+        await integration.execute("create_invite", params)
+
+    token_calls = [u for u in post_calls_urls if "oauth2.googleapis.com" in u]
+    event_calls = [u for u in post_calls_urls if "calendar" in u]
+    assert len(token_calls) == 1
+    assert len(event_calls) == 2
+
+
+async def test_execute_token_refreshed_on_expiry(monkeypatch):
+    """Expired token triggers a second refresh on next execute."""
+    _configured(monkeypatch)
+    token_response = MagicMock()
+    token_response.status_code = 200
+    token_response.json.return_value = {"access_token": "tok", "expires_in": 3600}
+
+    event_response = MagicMock()
+    event_response.status_code = 200
+    event_response.json.return_value = {"id": "ev1", "htmlLink": ""}
+
+    token_call_count = 0
+
+    async def fake_post(url, **kwargs):
+        nonlocal token_call_count
+        if "oauth2.googleapis.com" in url:
+            token_call_count += 1
+            return token_response
+        return event_response
+
+    mock_client = AsyncMock()
+    mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+    mock_client.__aexit__ = AsyncMock(return_value=False)
+    mock_client.post = fake_post
+
+    with patch("app.integrations.google_calendar.httpx.AsyncClient", return_value=mock_client):
+        integration = GoogleCalendarIntegration()
+        params = {
+            "title": "Block",
+            "start_datetime": "2026-05-01T09:00:00Z",
+            "end_datetime": "2026-05-01T10:00:00Z",
+        }
+        await integration.execute("create_invite", params)
+        integration._token_expiry = time.monotonic() - 1.0
+        await integration.execute("create_invite", params)
+
+    assert token_call_count == 2
+
+
+# ---------------------------------------------------------------------------
+# execute — API failure
+# ---------------------------------------------------------------------------
+
+
+async def test_execute_calendar_api_failure_raises(monkeypatch):
+    _configured(monkeypatch)
+    token_response = MagicMock()
+    token_response.status_code = 200
+    token_response.json.return_value = {"access_token": "tok", "expires_in": 3600}
+
+    event_response = MagicMock()
+    event_response.status_code = 409
+
+    mock_client = AsyncMock()
+    mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+    mock_client.__aexit__ = AsyncMock(return_value=False)
+    mock_client.post = AsyncMock(side_effect=[token_response, event_response])
+
+    with patch("app.integrations.google_calendar.httpx.AsyncClient", return_value=mock_client):
+        with pytest.raises(IntegrationError) as exc_info:
+            await GoogleCalendarIntegration().execute(
+                "create_invite",
+                {
+                    "title": "Block",
+                    "start_datetime": "2026-05-01T09:00:00Z",
+                    "end_datetime": "2026-05-01T10:00:00Z",
+                },
+            )
+    assert exc_info.value.integration == "google_calendar"
+    assert "409" in str(exc_info.value)

@@ -1,0 +1,702 @@
+---
+stepsCompleted: ['step-01-validate-prerequisites', 'step-02-design-epics', 'step-03-create-stories', 'step-04-final-validation']
+inputDocuments: ['_bmad-output/planning-artifacts/prd.md', '_bmad-output/planning-artifacts/architecture.md']
+---
+
+# autom9 - Epic Breakdown
+
+## Overview
+
+This document provides the complete epic and story breakdown for autom9, decomposing the requirements from the PRD and Architecture into implementable stories.
+
+## Requirements Inventory
+
+### Functional Requirements
+
+FR1: Consultant can view their open days and scheduled engagements sourced from Snowflake via the Tableau data source within the extension panel
+FR2: Consultant can view their task list ingested from their designated individual Google Doc
+FR3: Consultant can interact with the AI agent via a chat interface embedded in the Tableau extension panel
+FR4: Agent can ask clarifying questions about task timing, priority, and scheduling preferences before taking action
+FR5: Agent retains context within a session to support multi-turn clarifying conversations
+FR6: Consultant can review the agent's proposed actions before execution is confirmed
+FR7: Agent surfaces open work opportunities from the org-wide Google Doc, distinguishing billable client work from internal projects
+FR8: Agent prioritises billable opportunities above internal project opportunities
+FR9: Agent calculates whether a consultant's available capacity meets the time commitment of an open work opportunity, including a 5% buffer
+FR10: Consultant can accept or decline an open work opportunity from within the extension panel
+FR11: Agent notifies the relevant coordinator when a consultant accepts an open work opportunity
+FR12: Agent does not resurface a previously declined opportunity to the same consultant
+FR13: Agent submits a Smartsheet planning request on behalf of the consultant
+FR14: Agent creates Google Calendar invites for the consultant around existing engagements
+FR15: Extension checks connectivity to all configured integrations on load and surfaces any unavailable services before interaction begins
+FR16: Agent fails gracefully with a specific error message if an integration becomes unavailable during a workflow, without partially executing dependent actions
+FR17: Agent masks identifiable data fields (names, client identifiers, engagement IDs) with opaque tokens before transmitting any context to the LLM provider
+FR18: Agent rehydrates masked tokens with real values from the session token map before displaying output or executing tool actions
+FR19: Integration credentials are never exposed in logs, the chat interface, or configuration files visible to consultants
+FR20: Admin can install and register the extension in Tableau Desktop and Tableau Cloud/Server
+FR21: Admin can configure the BYOM LLM provider and API credentials at the org level via the extension configuration panel
+FR22: Admin can load and update the JSON workflow configuration file defining agent capabilities, tool access, and workflow parameters
+FR23: Admin can test integration connections from the configuration panel before activating the extension for consultants
+FR24: Admin can access agent interaction logs with sufficient detail to diagnose failed tool calls, error patterns, and latency
+FR25: Integration status check results are logged for admin review
+FR26: New agent workflows can be added by updating the JSON workflow configuration file without modifying platform code
+FR27: The JSON workflow configuration defines available tools, agent instructions, and workflow parameters in a versionable format
+FR28: The extension supports OpenAI and Anthropic as BYOM LLM providers, switchable via configuration change
+FR29: The extension is compatible with Tableau Desktop and Tableau Cloud/Server
+
+### NonFunctional Requirements
+
+NFR1: Agent responses complete within 20 seconds (p95) under normal operating conditions during the POC phase (nice-to-have; no hard SLA in v1)
+NFR2: The extension panel renders and integration status check completes within 5 seconds of Tableau dashboard load
+NFR3: The chat interface displays a visible processing indicator within 1 second of the consultant submitting a message
+NFR4: All data transmitted between the extension and external services is encrypted in transit (TLS 1.2+)
+NFR5: API credentials and integration tokens are stored encrypted at rest and never surfaced in logs, UI elements, or configuration files accessible to consultants
+NFR6: The token masking system transmits no real consultant names, client identifiers, or engagement IDs to any external LLM provider under any circumstances
+NFR7: Agent interaction logs capture only masked data representations — no raw LLM payloads containing identifiable fields
+NFR8: The extension identifies and reports unavailability of any configured integration within the 5-second load status check window
+NFR9: A failure in one integration does not cascade to prevent other integrations from functioning
+NFR10: The JSON workflow configuration system handles version mismatches gracefully — a config update does not break or corrupt an in-flight session
+NFR11: The extension supports concurrent usage by all 80 POC consultants without degradation in agent response time
+NFR12: The platform architecture imposes no design constraints that would prevent future multi-tenant isolation
+
+### Additional Requirements
+
+- **[ARC-1] Project Scaffolding (Day-Zero):** Backend scaffold: `uv init autom9-backend` with fastapi, uvicorn, sqlalchemy[asyncio], asyncpg, alembic, pydantic-settings, python-jose, httpx, cryptography, python-json-logger. Frontend scaffold: `npm create vite@latest autom9-extension -- --template svelte-ts` with @tableau/extensions-api-types.
+- **[ARC-2] .trex Manifest:** Create `autom9.trex` at extension project root with required fields: name, description, source-location (backend URL), min-version, permissions (read worksheets). Without this the extension cannot load for any testing.
+- **[ARC-3] CORS Configuration:** Configure FastAPI `CORSMiddleware` in `main.py` with allowed Tableau origins (public.tableau.com and Tableau Server domain).
+- **[ARC-4] JSON Workflow Config Schema:** Document schema in `app/config/workflow_schema.py` — minimum fields: version (semver), tools (array with name, description, parameters), agent_instructions (string), workflow_id (string).
+- **[ARC-5] Tableau initializeAsync Gate:** `tableau.extensions.initializeAsync()` must complete before any store setup or backend calls in `App.svelte`.
+- **[ARC-6] Alembic Fail-Fast:** Container must fail to start if migration fails. Enforced via Docker entrypoint exit code check.
+- **[ARC-7] Async Test Setup:** `pytest.ini` must specify `asyncio_mode = auto`. Async SQLAlchemy fixtures must be function-scoped to prevent state leakage.
+- **[ARC-8] Connection Pool Sizing:** `DATABASE_POOL_MIN` and `DATABASE_POOL_MAX` as environment variables (recommended: min=5, max=20) via pydantic-settings.
+- **[ARC-9] masking.py Quality Gate:** `app/agent/masking.py` requires 100% branch coverage as a hard acceptance criterion for any story touching the agent pipeline.
+- **[ARC-10] LLM Retry/Backoff Strategy:** `LLMProvider.complete()` must apply exponential backoff with jitter, 3 retries max, then raise `ProviderError` on 429 or transient errors.
+- **[ARC-11] Data Models:** Four core models required: `DeclinedOpportunity` (consultant_id, opportunity_id, declined_at), `InteractionLog` (session_id, masked_input, masked_output, tool_calls, latency_ms, timestamp), `CredentialStore` (org_id, provider, encrypted_key), `WorkflowConfig` (version, config_json, loaded_at), `Session` (session_id UUID PK, tableau_user_id, started_at).
+- **[ARC-12] BYOM Provider Interface:** `LLMProvider` class with `complete()` and `stream()` — stream() raises `NotImplementedError` in v1.
+- **[ARC-13] Integration Interface:** All integrations in `app/integrations/` implement `IntegrationBase` with `health_check()` and `execute()`. Failure raises `IntegrationError` caught at `app/api/` level.
+- **[ARC-14] Session Registry:** `GET /api/admin/sessions/{session_id}` endpoint for admin triage. All `InteractionLog` entries reference session_id. PII stays out of logs.
+
+### UX Design Requirements
+
+No UX design document present for this project.
+
+### FR Coverage Map
+
+FR1:  Epic 3 — Tableau/Snowflake data panel
+FR2:  Epic 3 — Individual Google Docs task list ingestion
+FR3:  Epic 3 — Chat interface in extension panel
+FR4:  Epic 3 — Agent clarifying Q&A before action
+FR5:  Epic 3 — Multi-turn session context retention
+FR6:  Epic 3 — Action confirmation before execution
+FR7:  Epic 4 — Org-wide Google Doc open work surfacing
+FR8:  Epic 4 — Billable > internal prioritisation
+FR9:  Epic 4 — Capacity + 5% buffer calculation
+FR10: Epic 4 — Accept/decline flow in panel
+FR11: Epic 4 — Coordinator notification on accept
+FR12: Epic 4 — Declined opportunity persistence
+FR13: Epic 3 — Smartsheet planning request
+FR14: Epic 3 — Google Calendar invite creation
+FR15: Epic 1 — Integration health check on load
+FR16: Epic 1 — Graceful failure isolation (pattern); Epic 3 (agent pipeline enforcement)
+FR17: Epic 3 — Token masking before LLM calls
+FR18: Epic 3 — Token rehydration before output/actions
+FR19: Epic 2 — Credentials never in logs/UI/config
+FR20: Epic 2 — Extension install (Desktop + Cloud)
+FR21: Epic 2 — BYOM credential configuration (org-level)
+FR22: Epic 2 — JSON workflow config load/update
+FR23: Epic 2 — Integration connection testing from admin panel
+FR24: Epic 2 — Admin interaction log access
+FR25: Epic 2 — Status check results logged
+FR26: Epic 2 — New workflows via JSON config, no code changes
+FR27: Epic 2 — JSON config defines tools, instructions, params (versionable)
+FR28: Epic 2 — OpenAI + Anthropic BYOM switching via config
+FR29: Epic 1 — Tableau Desktop + Cloud/Server compatibility
+
+## Epic List
+
+### Epic 1: Platform Foundation & Extension Shell
+
+The extension loads in Tableau, renders a status panel, and confirms that all configured integrations are reachable — giving consultants and admins a trustworthy starting point for every session.
+
+**FRs covered:** FR15, FR16 (isolation pattern established), FR29
+**ARCs covered:** ARC-1, ARC-2, ARC-3, ARC-5, ARC-6, ARC-7, ARC-8, ARC-11 (Session, CredentialStore, WorkflowConfig, InteractionLog only), ARC-12 (interface only), ARC-13 (interface only), ARC-14
+**NFRs covered:** NFR2, NFR4, NFR8, NFR9, NFR12
+
+> Note: `DeclinedOpportunity` model deferred to Epic 4 (migration-first — no schema for features not yet built).
+
+### Epic 2: Admin Configuration & Extension Management
+
+An admin can fully configure the extension — set BYOM credentials, load a JSON workflow config, test all integrations, and review interaction logs — making the extension ready for consultants to use.
+
+**FRs covered:** FR19, FR20, FR21, FR22, FR23, FR24, FR25, FR26, FR27, FR28
+**ARCs covered:** ARC-4, ARC-9 (quality gate policy defined), ARC-10 (LLM retry/backoff), ARC-12 (concrete OpenAI + Anthropic implementations), ARC-13 (concrete integration implementations)
+**NFRs covered:** NFR5, NFR10
+
+### Epic 3: Consultant Planning Request Workflow (Core POC)
+
+A consultant can open the extension, see their open days and task list, have a multi-turn clarifying conversation with the agent, and complete a Smartsheet planning request with Google Calendar invites — without leaving Tableau.
+
+**FRs covered:** FR1, FR2, FR3, FR4, FR5, FR6, FR13, FR14, FR16 (enforced in pipeline), FR17, FR18
+**ARCs covered:** ARC-9 (masking.py 100% branch coverage gate enforced here)
+**NFRs covered:** NFR1, NFR3, NFR6, NFR7, NFR11
+
+### Epic 4: Open Work Discovery & Acceptance _(POC Stretch Goal)_
+
+A consultant can browse open work opportunities (billable prioritised above internal), check their capacity against the commitment, accept or decline — with coordinator notification on acceptance and declined opportunities never resurfacing.
+
+**FRs covered:** FR7, FR8, FR9, FR10, FR11, FR12
+**ARCs covered:** ARC-11 (DeclinedOpportunity model + migration introduced here)
+**NFRs covered:** NFR11 (capacity check logic)
+
+---
+
+## Epic 1: Platform Foundation & Extension Shell
+
+Both the backend server and Tableau extension frontend are scaffolded, the extension loads inside Tableau without errors, and a parallel integration health check runs on load — giving consultants and admins a trustworthy, observable starting point before any agent interaction begins.
+
+### Story 1.1: Project Scaffolding & Backend Foundation
+
+As an **admin/developer**,
+I want both the backend server and extension frontend scaffolded with all foundational tooling configured,
+So that the development team has a runnable, tested baseline to build every subsequent story on.
+
+**Acceptance Criteria:**
+
+**Given** the repository is freshly cloned
+**When** `docker compose up` is run
+**Then** the backend API container starts successfully and `GET /health` returns `{"status": "ok"}`
+**And** the PostgreSQL container starts and Alembic migrations run to completion (tables: `sessions`, `interaction_logs`, `credential_store`, `workflow_configs`)
+**And** if migrations fail, the container exits with a non-zero code (fail-fast enforced)
+
+**Given** the frontend scaffold exists
+**When** `npm run dev` is run
+**Then** the Vite dev server starts and serves the extension shell on localhost
+
+**Given** `pytest` is run against the backend
+**When** tests execute
+**Then** `asyncio_mode = auto` is active, all fixtures are function-scoped, and the test suite passes with zero failures
+
+**Given** the pydantic-settings config is loaded
+**When** the app starts
+**Then** `DATABASE_URL`, `ENCRYPTION_KEY`, `BACKEND_SECRET`, `LOG_LEVEL`, `DATABASE_POOL_MIN`, `DATABASE_POOL_MAX` are all resolved from environment variables and the app fails to start if any required variable is missing
+
+**Dev notes:** ARC-1, ARC-6, ARC-7, ARC-8, ARC-11 (schema only — no application logic yet)
+
+---
+
+### Story 1.2: Tableau Extension Shell & Initialization
+
+As an **admin**,
+I want the autom9 extension to load inside a Tableau dashboard without errors,
+So that consultants see the extension panel and the system is ready to make backend calls.
+
+**Acceptance Criteria:**
+
+**Given** the `.trex` manifest is registered in Tableau Desktop or Tableau Cloud
+**When** a consultant opens a Tableau dashboard with the autom9 extension
+**Then** the extension panel renders without a blank screen or error message
+
+**Given** the extension panel has mounted
+**When** `tableau.extensions.initializeAsync()` is called
+**Then** no store initialization or backend HTTP calls begin until the promise resolves
+**And** if `initializeAsync()` rejects, the extension displays a clear load-failure message
+
+**Given** the extension is running in development
+**When** the extension frontend makes an HTTP call to the backend
+**Then** CORS headers are accepted for the configured Tableau origins (no CORS errors in browser console)
+
+**Given** any Tableau Dashboard (Desktop or Cloud/Server)
+**When** the extension is loaded
+**Then** the extension shell renders correctly in both environments (FR29)
+
+**Dev notes:** ARC-2 (.trex manifest), ARC-3 (CORS), ARC-5 (initializeAsync gate), FR29
+
+---
+
+### Story 1.3: Integration Health Check on Extension Load
+
+As a **consultant**,
+I want to see the status of all configured integrations when I open the autom9 panel,
+So that I know before I start whether the tools I need are available.
+
+**Acceptance Criteria:**
+
+**Given** the extension has initialized
+**When** the extension loads
+**Then** the backend runs parallel health checks against all configured integrations within 5 seconds (NFR2, NFR8)
+**And** a `Session` record is created in the database with `session_id` (UUID) and `tableau_user_id` from the Tableau session context (ARC-14)
+
+**Given** all integrations are reachable
+**When** health checks complete
+**Then** `StatusBar.svelte` displays a green indicator for each integration
+
+**Given** one or more integrations are unreachable
+**When** health checks complete
+**Then** `StatusBar.svelte` displays each unavailable integration with a specific error indicator
+**And** the unavailable integration(s) are surfaced to the consultant before any interaction begins (FR15)
+**And** the failure of one integration does not prevent other integrations from reporting their status (NFR9)
+
+**Given** health check results are available
+**When** results are logged
+**Then** each log entry contains `session_id` (opaque UUID), integration name, status, and latency — no consultant names or credentials (FR25 foundation)
+
+**Given** `IntegrationBase` and `LLMProvider` interfaces are defined
+**When** any integration or provider implementation raises an error
+**Then** it raises `IntegrationError` or `ProviderError` respectively — never a bare `Exception` — caught at the `app/api/` level without propagating as unhandled (FR16 isolation pattern)
+
+**Dev notes:** ARC-12 (LLMProvider interface stub), ARC-13 (IntegrationBase interface + stub implementations for health check), ARC-14 (session creation), NFR9, NFR12
+
+---
+
+## Epic 2: Admin Configuration & Extension Management
+
+An admin can fully configure the extension — set BYOM credentials, load a JSON workflow config, test all integrations, and review interaction logs — making the extension ready for consultants to use.
+
+### Story 2.1: Admin Config Panel & BYOM Credential Setup
+
+As an **admin**,
+I want to configure the BYOM LLM provider and API credentials from the extension's admin panel,
+So that the agent has a valid, encrypted LLM provider before any consultant interaction begins.
+
+**Acceptance Criteria:**
+
+**Given** the extension is loaded and the admin opens the config panel
+**When** `AdminConfig.svelte` renders
+**Then** the panel displays fields for LLM provider selection (OpenAI / Anthropic) and API key input (FR20, FR21)
+
+**Given** an admin submits valid BYOM credentials via `POST /api/admin/credentials`
+**When** the backend processes the request
+**Then** the API key is encrypted using Fernet symmetric encryption before storage in `credential_store`
+**And** the plaintext key is never written to logs, response bodies, or any database column (FR19, NFR5)
+
+**Given** credentials are stored
+**When** the admin revisits the config panel
+**Then** the key field displays a masked placeholder (e.g., `••••••••`) — the raw value is never returned by any API endpoint (NFR5)
+
+**Given** invalid or missing credentials are submitted
+**When** `POST /api/admin/credentials` is called
+**Then** the API returns a `400` with a structured error — no stack trace or internal detail exposed
+
+**Dev notes:** FR19, FR20, FR21, NFR5 — `AdminConfig.svelte` shell established here; other admin sections built in subsequent stories
+
+---
+
+### Story 2.2: JSON Workflow Configuration System
+
+As an **admin**,
+I want to upload and update a JSON workflow configuration file that defines the agent's available tools and instructions,
+So that new agent workflows can be added or changed without modifying platform code.
+
+**Acceptance Criteria:**
+
+**Given** a valid JSON workflow config is uploaded via `POST /api/admin/config`
+**When** `WorkflowRegistry` processes the file
+**Then** `validate_schema()` confirms the presence of required fields: `version` (semver), `workflow_id`, `tools` (array with `name`, `description`, `parameters`), `agent_instructions` (string)
+**And** the config is stored in `workflow_configs` with `version`, `config_json`, and `loaded_at`
+
+**Given** the extension loads
+**When** `GET /api/config/workflow` is called
+**Then** the current active workflow config is returned and `WorkflowRegistry.get_tool_definitions()` reflects the loaded tools (FR22, FR27)
+
+**Given** a new config is uploaded while a session is in progress
+**When** the in-flight session makes a subsequent tool call
+**Then** the session continues using the config version it started with — no disruption or corruption (NFR10)
+
+**Given** an invalid or version-mismatched config is uploaded
+**When** `validate_schema()` runs
+**Then** the upload is rejected with a clear error and the previous active config remains unchanged (FR26, FR27)
+
+**Dev notes:** ARC-4, NFR10 — `WorkflowRegistry` class with `register_workflow()`, `get_tool_definitions()`, `validate_schema()`; file-backed in v1
+
+---
+
+### Story 2.3: BYOM Provider Implementations
+
+As an **admin**,
+I want to switch the active LLM provider between OpenAI and Anthropic via configuration,
+So that the platform is not locked to a single model vendor.
+
+**Acceptance Criteria:**
+
+**Given** OpenAI is set as the active BYOM provider in credentials
+**When** the agent makes an LLM call
+**Then** `OpenAIProvider.complete()` is invoked with the correct message format for the OpenAI API
+
+**Given** Anthropic is set as the active BYOM provider
+**When** the agent makes an LLM call
+**Then** `AnthropicProvider.complete()` is invoked with the correct Anthropic message format
+**And** tool call formats are normalised behind the `LLMProvider` interface — the orchestration layer is unaware of provider differences (FR28)
+
+**Given** the provider returns a `429` or transient error
+**When** `LLMProvider.complete()` handles the response
+**Then** exponential backoff with jitter is applied, retrying up to 3 times before raising `ProviderError` (ARC-10)
+
+**Given** `LLMProvider.stream()` is called
+**When** the method executes
+**Then** it raises `NotImplementedError` (streaming deferred to v2; interface is set)
+
+**Given** the provider is switched from OpenAI to Anthropic via a config change
+**When** the next agent call is made
+**Then** the new provider is used without requiring an app restart (FR28)
+
+**Dev notes:** ARC-10, ARC-12 (concrete implementations), FR28
+
+---
+
+### Story 2.4: Integration Connection Testing
+
+As an **admin**,
+I want to test each integration connection from the config panel before activating the extension for consultants,
+So that I can diagnose credential or connectivity issues before they affect consultant workflows.
+
+**Acceptance Criteria:**
+
+**Given** the admin opens the config panel
+**When** they click "Test Connections"
+**Then** `POST /api/integrations/{name}/test` is called for each configured integration (Snowflake, Google Docs, Smartsheet, Google Calendar, LLM provider)
+**And** results are displayed per integration with a pass/fail indicator and specific error message on failure (FR23)
+
+**Given** an integration test call is made
+**When** the integration's `health_check()` runs
+**Then** it uses the concrete `IntegrationBase` implementation for that service
+**And** failure raises `IntegrationError` — never propagates as an unhandled exception to the client
+
+**Given** one integration test fails
+**When** results are returned
+**Then** the other integration test results are unaffected and still displayed (NFR9)
+
+**Given** a test succeeds
+**When** results are logged
+**Then** the log entry contains `session_id`, integration name, and latency — no credential values (FR19)
+
+**Dev notes:** ARC-13 (concrete IntegrationBase implementations for all 5 integrations), FR23
+
+---
+
+### Story 2.5: Admin Interaction Log Access
+
+As an **admin**,
+I want to retrieve masked agent interaction logs and resolve a session ID to a consultant identity,
+So that I can diagnose failed tool calls, error patterns, and latency issues.
+
+**Acceptance Criteria:**
+
+**Given** agent interactions have occurred
+**When** `GET /api/admin/logs` is called with optional filters (session_id, time range)
+**Then** log entries are returned containing: `session_id`, `tool`, `latency_ms`, `masked_input`, `masked_output`, `timestamp`
+**And** no entry contains consultant names, client identifiers, engagement IDs, or raw API keys (FR24, NFR7)
+
+**Given** an admin needs to identify which consultant a session belongs to
+**When** `GET /api/admin/sessions/{session_id}` is called
+**Then** the `tableau_user_id` for that session is returned (ARC-14)
+**And** this endpoint is restricted to admin-authenticated requests only
+
+**Given** integration status checks have run
+**When** `GET /api/admin/logs` is queried
+**Then** status check results are included in the log output (FR25)
+
+**Given** a log entry is written anywhere in the system
+**When** the masking filter processes it
+**Then** it passes through `app/agent/masking.py`'s masking pipeline before write — no raw PII ever reaches log storage (NFR7)
+
+**Dev notes:** FR24, FR25, ARC-14 (session registry lookup), NFR7
+
+---
+
+## Epic 3: Consultant Planning Request Workflow (Core POC)
+
+A consultant can open the extension, see their open days and task list, have a multi-turn clarifying conversation with the agent, and complete a Smartsheet planning request with Google Calendar invites — without leaving Tableau.
+
+### Story 3.1: Planning Data Display Panel
+
+As a **consultant**,
+I want to see my open days and task list inside the extension panel,
+So that I have the context I need before starting a planning conversation with the agent.
+
+**Acceptance Criteria:**
+
+**Given** the extension has initialized and the consultant's Tableau session is active
+**When** `DataPanel.svelte` loads
+**Then** the consultant's open days and scheduled engagements are displayed, sourced from the Tableau worksheet data via `tableau.ts` (FR1)
+
+**Given** a Google Docs URL is configured for the consultant's individual task doc
+**When** the panel loads
+**Then** the task list is ingested from the Google Doc and rendered in the panel (FR2)
+
+**Given** the JSON workflow config specifies a Tableau worksheet name for data display
+**When** `DataPanel.svelte` loads
+**Then** it reads that worksheet via `tableau.ts` using the configured name — not a hardcoded worksheet identifier
+**And** `DataPanel.svelte` renders the returned data generically — layout is not wired to planning-specific field names
+
+**Given** the Snowflake/Tableau data source is unavailable
+**When** the data panel attempts to load
+**Then** a specific, plain-language error is shown in the panel — no raw exception details visible to the consultant
+
+**Given** the Google Docs integration is unavailable
+**When** task list ingestion fails
+**Then** the open days section still renders correctly — the two data sources are independently fallible (NFR9)
+
+**Dev notes:** FR1, FR2 — `tableau.ts` reads worksheet by configured name; `DataPanel.svelte` renders generic structured data; `lib/api.ts` HTTP client
+
+---
+
+### Story 3.2: Token Masking & Rehydration Pipeline
+
+As a **consultant**,
+I want my personal and client data to be protected from exposure to external LLM providers,
+So that sensitive planning information stays within the organisation regardless of which AI model is used.
+
+**Acceptance Criteria:**
+
+**Given** consultant data (names, client identifiers, engagement IDs) enters `app/agent/`
+**When** `masking.py` processes the data
+**Then** all identifiable fields are replaced with opaque tokens (e.g. `CONSULTANT_X`, `CLIENT_A`, `ENGAGEMENT_001`) before any LLM call is made (FR17, NFR6)
+
+**Given** a session token map is initialised
+**When** the extension loads (session start)
+**Then** `sessionStore` holds an empty `Map<string, string>` — never populated from `localStorage` or `sessionStorage`
+**And** the token map resets to empty on every extension load
+
+**Given** the LLM returns a response containing masked tokens
+**When** `masking.py` rehydrates the response
+**Then** all opaque tokens are replaced with their real values from the session token map before output is displayed or tool actions are executed (FR18)
+
+**Given** a log entry is written after an LLM call
+**When** the masking filter applies
+**Then** the log contains `masked_input` and `masked_output` only — no raw consultant names, client names, or engagement IDs appear anywhere in the log (NFR7)
+
+**Given** `app/agent/masking.py` tests are run
+**When** coverage is measured
+**Then** branch coverage is 100% — this is a hard acceptance gate; the story is not done until this is met (ARC-9)
+
+**Dev notes:** FR17, FR18, NFR6, NFR7, ARC-9 — `app/agent/masking.py` as a pipeline step; never inline in orchestration logic
+
+---
+
+### Story 3.3: Agent Chat Interface
+
+As a **consultant**,
+I want to type messages to the agent and see responses in a chat panel,
+So that I can have a natural conversation about my planning without leaving Tableau.
+
+**Acceptance Criteria:**
+
+**Given** the extension panel is open
+**When** `ChatPanel.svelte` renders
+**Then** `MessageList.svelte` shows the conversation history and `InputBar.svelte` shows a text input and submit button (FR3)
+
+**Given** the consultant submits a message
+**When** the submit action fires
+**Then** `chatStore` transitions from `idle` → `loading` within 1 second and a visible processing indicator appears (NFR3)
+
+**Given** the backend returns a response
+**When** the response is received
+**Then** `chatStore` transitions `loading` → `complete` and the response renders in `MessageList.svelte`
+
+**Given** the backend returns an error
+**When** the request fails
+**Then** `chatStore` transitions `loading` → `error` and a plain-language error message is shown — no `error.code` or stack trace visible to the consultant
+
+**Given** the consultant sends multiple messages in sequence
+**When** `POST /api/chat` is called for each
+**Then** prior conversation turns are included in the request payload, maintaining session context across the multi-turn exchange (FR5)
+
+**Given** 80 consultants are using the extension concurrently
+**When** messages are submitted simultaneously
+**Then** async I/O handles the concurrent load without degradation in response sequencing (NFR11)
+
+**Dev notes:** FR3, FR5, NFR3, NFR11 — `ChatPanel.svelte`, `MessageList.svelte`, `InputBar.svelte`, `chatStore` state machine; `POST /api/chat` endpoint wiring
+
+---
+
+### Story 3.4: Agent Orchestration & Action Confirmation
+
+As a **consultant**,
+I want the agent to ask clarifying questions before taking action and show me what it's about to do before executing,
+So that I stay in control of what gets submitted on my behalf.
+
+**Acceptance Criteria:**
+
+**Given** a consultant sends a planning-related message
+**When** the agent determines clarification is needed (e.g. flexible timing, urgent deliverable)
+**Then** the agent responds with specific clarifying questions before dispatching any tool call (FR4)
+
+**Given** the agent has gathered sufficient context and is ready to act
+**When** it prepares a tool call
+**Then** `ActionConfirm.svelte` renders showing the proposed action before execution (FR6)
+
+**Given** the consultant confirms the proposed action
+**When** `ActionConfirm.svelte` fires the confirmation
+**Then** the tool call is dispatched and execution proceeds
+
+**Given** the consultant dismisses the confirmation
+**When** the action is cancelled
+**Then** the agent acknowledges the cancellation and returns to idle — no partial tool execution occurs (FR16)
+
+**Given** an integration becomes unavailable mid-workflow after confirmation
+**When** the tool call attempts to execute
+**Then** the agent fails with a specific plain-language error message and does not execute any dependent subsequent actions (FR16)
+
+**Given** the agent receives a tool call name from the LLM response
+**When** it dispatches the tool
+**Then** it resolves the implementation via `WorkflowRegistry.get_tool_definitions()` by tool name — no hardcoded `if tool == "smartsheet"` or `if tool == "google_calendar"` logic exists in the orchestration layer
+**And** a future use case adding a new tool requires only a new `IntegrationBase` implementation and a JSON config update — zero changes to the orchestration layer
+
+**Given** agent response time is measured
+**When** a typical planning request completes end-to-end
+**Then** p95 response time is ≤20 seconds under normal POC load (NFR1 — nice-to-have target)
+
+**Dev notes:** FR4, FR6, FR16, NFR1 — `app/agent/` orchestration engine; `ActionConfirm.svelte`; registry-driven tool dispatch; masking pipeline from Story 3.2 enforced on all LLM inputs/outputs
+
+---
+
+### Story 3.5: Smartsheet Planning Request Integration
+
+As a **consultant**,
+I want the agent to submit a Smartsheet planning request on my behalf,
+So that my open days are formally logged in the planning system without me navigating to Smartsheet.
+
+**Acceptance Criteria:**
+
+**Given** the consultant has confirmed a planning action and the orchestration layer dispatches the registered Smartsheet tool
+**When** `SmartsheetIntegration.execute("submit_planning_request", params)` is called
+**Then** the correctly structured payload is sent to the Smartsheet API
+
+**Given** the Smartsheet API returns a success response
+**When** the tool call completes
+**Then** the agent reports confirmation to the consultant in the chat panel (FR13)
+
+**Given** the Smartsheet API is unavailable or returns an error
+**When** `execute()` fails
+**Then** `IntegrationError` is raised, caught at `app/api/`, and a specific plain-language message is returned — no partial execution of any dependent calendar action (FR16)
+
+**Given** the tool call payload is logged
+**When** the log entry is written
+**Then** it contains `session_id`, `tool: "smartsheet"`, `latency_ms`, and `masked_input` — no identifiable consultant or client data (NFR7)
+
+**Dev notes:** FR13, FR16 — concrete `SmartsheetIntegration(IntegrationBase)` in `app/integrations/`; registered in the planning workflow JSON config by tool name
+
+---
+
+### Story 3.6: Google Calendar Integration
+
+As a **consultant**,
+I want the agent to create Google Calendar invites around my existing engagements,
+So that my calendar reflects my planned work without me manually scheduling each event.
+
+**Acceptance Criteria:**
+
+**Given** the consultant has confirmed a calendar action and the orchestration layer dispatches the registered Calendar tool
+**When** `GoogleCalendarIntegration.execute("create_invite", params)` is called
+**Then** correctly structured event details (title, dates, times derived from engagement context) are sent to the Calendar API (FR14)
+
+**Given** the Calendar API returns a success response
+**When** the tool call completes
+**Then** the agent confirms the invite creation to the consultant in the chat panel
+
+**Given** the Calendar API is unavailable or the OAuth token has expired
+**When** `execute()` fails
+**Then** `IntegrationError` is raised with a specific error message identifying the Calendar integration — no partial execution of other pending actions (FR16)
+
+**Given** a Calendar invite is created after a Smartsheet request in the same workflow
+**When** the Smartsheet step succeeds but Calendar fails
+**Then** the Smartsheet submission is not rolled back — each tool action is independent and the consultant is informed of the partial outcome with a specific message per integration (FR16)
+
+**Given** the tool call payload is logged
+**When** the log entry is written
+**Then** it contains `session_id`, `tool: "google_calendar"`, `latency_ms`, and `masked_input` — no identifiable consultant or client data (NFR7)
+
+**Dev notes:** FR14, FR16 — concrete `GoogleCalendarIntegration(IntegrationBase)` in `app/integrations/`; registered in the planning workflow JSON config by tool name
+
+---
+
+## Epic 4: Open Work Discovery & Acceptance _(POC Stretch Goal)_
+
+A consultant can browse open work opportunities (billable prioritised above internal), check their capacity against the commitment, accept or decline — with coordinator notification on acceptance and declined opportunities never resurfacing.
+
+### Story 4.1: Open Work Board Ingestion & Display
+
+As a **consultant**,
+I want to see open work opportunities from the org-wide board inside the extension panel, with billable work shown above internal projects,
+So that I can quickly identify the highest-priority opportunities relevant to me.
+
+**Acceptance Criteria:**
+
+**Given** an org-wide Google Doc URL is configured as the open work board
+**When** the consultant opens the open work section of the panel
+**Then** opportunities are ingested from the doc and displayed, each typed as `billable` or `internal` (FR7)
+
+**Given** both billable and internal opportunities are present
+**When** the list renders
+**Then** all billable opportunities appear above all internal opportunities (FR8)
+
+**Given** the org-wide Google Doc is unavailable
+**When** ingestion fails
+**Then** a specific plain-language error is shown — the rest of the extension panel remains functional (NFR9)
+
+**Given** the open work board is ingested
+**When** opportunities are displayed
+**Then** the layout uses the same generic data rendering established in Story 3.1 — no new hardcoded UI structures for open work fields
+
+**Dev notes:** FR7, FR8 — `GoogleDocsIntegration` called with org-wide board URL from workflow config; priority sort logic in agent layer, not UI
+
+---
+
+### Story 4.2: Capacity & Availability Check
+
+As a **consultant**,
+I want the agent to tell me whether I can credibly commit to an open work opportunity before I decide,
+So that I don't accept work I don't have capacity for.
+
+**Acceptance Criteria:**
+
+**Given** the consultant views an open work opportunity
+**When** the agent evaluates it
+**Then** it compares the consultant's available open days (from Tableau data) against the opportunity's time commitment plus a 5% buffer (FR9)
+
+**Given** the consultant has sufficient capacity (open days ≥ time requested × 1.05)
+**When** the agent surfaces the opportunity
+**Then** it confirms the consultant can credibly commit and displays the capacity calculation
+
+**Given** the consultant does not have sufficient capacity
+**When** the agent evaluates the opportunity
+**Then** it flags the shortfall clearly — showing available days vs. required days including buffer — before asking if the consultant wants to proceed (FR9)
+
+**Given** the Tableau data source is unavailable when capacity is checked
+**When** the check runs
+**Then** `IntegrationError` is raised and the consultant is told capacity cannot be verified — the opportunity is not surfaced as committable (FR16)
+
+**Dev notes:** FR9, FR16 — capacity calculation logic in `app/agent/`; uses open days already read via `tableau.ts` in Story 3.1
+
+---
+
+### Story 4.3: Accept / Decline Flow & Coordinator Notification
+
+As a **consultant**,
+I want to accept or decline an open work opportunity from the panel, with my decision logged and acted on immediately,
+So that the coordinator is notified instantly on acceptance and I'm never shown an opportunity I've already declined.
+
+**Acceptance Criteria:**
+
+**Given** an open work opportunity is displayed
+**When** the consultant chooses to accept
+**Then** the agent notifies the relevant coordinator (via the mechanism defined in the workflow config) (FR11)
+**And** the acceptance is confirmed to the consultant in the chat panel
+
+**Given** an open work opportunity is displayed
+**When** the consultant declines
+**Then** a `DeclinedOpportunity` record is persisted to the database (`consultant_id`, `opportunity_id`, `declined_at`) via Alembic migration introduced in this story (FR12, ARC-11)
+**And** the agent acknowledges the decline without judgment and returns to idle
+
+**Given** a `DeclinedOpportunity` record exists for a consultant+opportunity pair
+**When** the open work board is next ingested for that consultant
+**Then** the previously declined opportunity is filtered out and never surfaced again (FR12)
+
+**Given** 80 consultants are accepting/declining concurrently
+**When** `DeclinedOpportunity` records are written
+**Then** async database writes complete without blocking the agent response (NFR11)
+
+**Given** the accept or decline action is logged
+**When** the log entry is written
+**Then** it contains `session_id`, `tool`, `latency_ms`, and `masked_input` — no consultant names or opportunity identifiers in plaintext (NFR7)
+
+**Dev notes:** FR10, FR11, FR12, ARC-11 — `DeclinedOpportunity` model + Alembic migration `0005_declined_opportunity.py` introduced here; coordinator notification tool registered in workflow config

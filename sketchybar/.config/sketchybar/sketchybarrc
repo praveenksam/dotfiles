@@ -31,7 +31,7 @@ sketchybar --default \
 # Left: Aerospace workspaces
 sketchybar --add event aerospace_workspace_change
 
-for sid in 1 2 3 4 5 6 B P S; do
+for sid in 1 2 3 4 5 6 7 8 B P S; do
   sketchybar --add item space.$sid left \
     --set space.$sid \
     icon="$sid" \
@@ -102,6 +102,13 @@ sketchybar --add item docker right \
   script="$CONFIG_DIR/plugins/docker.sh" \
   --subscribe docker system_woke
 
+sketchybar --add item nowplaying right \
+  --set nowplaying \
+  icon= \
+  icon.color=0xff2ac3de \
+  drawing=off \
+  script="$CONFIG_DIR/plugins/nowplaying.sh"
+
 sketchybar --update
 
 # Force initial run of all scripts
@@ -111,3 +118,4 @@ $CONFIG_DIR/plugins/cpu.sh
 $CONFIG_DIR/plugins/memory.sh
 $CONFIG_DIR/plugins/wifi.sh
 $CONFIG_DIR/plugins/battery.sh
+$CONFIG_DIR/plugins/nowplaying.sh
