@@ -5,18 +5,22 @@ description: Create a new workstream inside a project, seeded with inherited con
 
 # Workstream — Init
 
-A workstream is a large sub-effort within a project, stored as `workstream-[slug].md` in the
-project folder, sharing the standard file structure, and rolled up as one line in the parent
-`project.md`'s Workstreams section. A workstream file is the source of truth for its own detail.
+A workstream is a large sub-effort within a project, stored in the project folder. Its filename
+follows the parent's `workstream_glob` (declared in the folder's `CLAUDE.md`/`AGENTS.md`),
+i.e. `<project-slug>.workstream-<wsslug>.md` — prefix with the parent slug so the name is unique
+(e.g. `roche-poc.workstream-user-remapping.md`). It shares the standard file structure and is
+rolled up as one line in the parent project file's Workstreams section, which is the source of
+truth for its own detail.
 
 ## Procedure — "init workstream [name] for [project]"
 
 Do NOT copy a blank template. Instead:
 
-1. Read the parent `project.md`, especially Context and Current Status.
+1. Find the parent project file (via the folder's manifest `project_file`, else glob `*.project.md`)
+   and read it, especially Context and Current Status. Note the parent slug for the filename.
 2. Identify the Current Status items — in-flight work, blockers, open questions, next actions —
    that belong to this new workstream.
-3. Create `workstream-[slug].md` in the project folder, seeded with:
+3. Create `<project-slug>.workstream-<wsslug>.md` in the project folder, seeded with:
    - **Context:** inherit the parent's client/stakeholders and goal, narrowed to this remit.
    - **Current Status:** move the relevant items here from the parent (verbatim first, then refine).
    - **Metadata:** today's date for Started and Last updated; carry priority/deadline if known.

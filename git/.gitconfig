@@ -8,6 +8,12 @@
 [includeIf "gitdir:~/personal/"]
     path = ~/.gitconfig-personal
 
+# The invest project lives at ~/invest on the VPS, which matches neither
+# of the paths above, so it would silently fall through to the default
+# identity. Explicit is better.
+[includeIf "gitdir:~/invest/"]
+    path = ~/.gitconfig-personal
+
 [init]
     defaultBranch = main
 

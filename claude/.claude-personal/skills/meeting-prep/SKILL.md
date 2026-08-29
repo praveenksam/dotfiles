@@ -5,10 +5,12 @@ description: Prepare the user for a specific meeting by pulling the relevant pro
 
 # Meeting Prep
 
-## Files
+## Finding the files
 
-Find the relevant `project.md` in the user's Drive projects directory (and a meeting note in
-the project folder if one is present). Read fresh.
+Locate the relevant project's folder. Its context file is named in that folder's
+`CLAUDE.md`/`AGENTS.md` manifest (`project_file`); if there's no manifest, glob `*.project.md`
+in the folder. `CLAUDE.md`/`AGENTS.md` are pointers to the project file, not separate content.
+Also read a meeting note in the folder if present. Read fresh.
 
 ## Procedure
 

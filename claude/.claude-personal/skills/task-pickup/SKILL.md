@@ -5,10 +5,11 @@ description: Help the user decide what to work on next, or break a long-term goa
 
 # Task Pick-up & Breakdown
 
-## Files
+## Finding the files
 
-Read the relevant `project.md` (and `workstream-*.md` if the work is inside a workstream)
-fresh from the user's Drive projects directory.
+The relevant project's context file (and any workstream files) are named in that folder's
+`CLAUDE.md`/`AGENTS.md` manifest (`project_file`, `workstream_glob`); if there's no manifest,
+glob `*.project.md` and `*.workstream-*.md`. Read fresh.
 
 ## Pick-up
 
@@ -19,5 +20,5 @@ start with, and say why.
 ## Breakdown
 
 Decompose the named goal into the next 3–5 concrete, sequenced actions, small enough to start
-immediately. Write them into the relevant file's Next concrete actions section, showing the
+immediately. Write them into the project file's Next concrete actions section, showing the
 change before saving.

@@ -1,0 +1,29 @@
+{
+  "state": "working",
+  "detail": "Critical vitest RCE gone. 21 left. Check what remains — leftover transitive, and confirm postcss/next chain cleared.",
+  "tempo": "blocked",
+  "needs": "send a prompt to start",
+  "output": null,
+  "children": null,
+  "linkScanOffset": 0,
+  "template": "bg",
+  "respawnFlags": [
+    "--permission-mode",
+    "default"
+  ],
+  "bgIsolation": "none",
+  "providerEnv": {
+    "CLAUDE_CONFIG_DIR": "/Users/praveensam/.claude-work"
+  },
+  "intent": "[Request interrupted by user for tool use]",
+  "sessionId": "cdc96a8e-ecc9-4c31-9906-55d76975f2d2",
+  "resumeSessionId": "cdc96a8e-ecc9-4c31-9906-55d76975f2d2",
+  "daemonShort": "cdc96a8e",
+  "cwd": "/Users/praveensam/Documents/work/02_Areas/Learning/ClaudeCertification/claudeCode/uigen",
+  "createdAt": "2026-07-09T19:04:19.247Z",
+  "updatedAt": "2026-07-09T19:04:21.025Z",
+  "firstTerminalAt": null,
+  "backend": "daemon",
+  "name": "security-audit-dependency-bumps",
+  "nameSource": "auto"
+}

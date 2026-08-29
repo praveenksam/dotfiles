@@ -1,0 +1,53 @@
+{
+  "proto": 1,
+  "supervisorPid": 89841,
+  "updatedAt": 1783931232560,
+  "workers": {
+    "cdc96a8e": {
+      "pid": 89874,
+      "procStart": "Thu Jul  9 19:04:19 2026",
+      "sessionId": "cdc96a8e-ecc9-4c31-9906-55d76975f2d2",
+      "rendezvousSock": "/tmp/cc-daemon-501/21fb4f1d/rv/cdc96a8e.sock",
+      "ptySock": "/tmp/cc-daemon-501/21fb4f1d/spare/85f0a939.pty.sock",
+      "cliVersion": "2.1.197",
+      "startedAt": 1783623859696,
+      "attempt": 1,
+      "cwd": "/Users/praveensam/Documents/work/02_Areas/Learning/ClaudeCertification/claudeCode/uigen",
+      "dispatch": {
+        "proto": 1,
+        "short": "cdc96a8e",
+        "nonce": "f541dbe2",
+        "sessionId": "cdc96a8e-ecc9-4c31-9906-55d76975f2d2",
+        "createdAt": 1783623859270,
+        "source": "slash",
+        "cwd": "/Users/praveensam/Documents/work/02_Areas/Learning/ClaudeCertification/claudeCode/uigen",
+        "launch": {
+          "mode": "resume",
+          "sessionId": "/Users/praveensam/.claude-work/projects/-Users-praveensam-Documents-work-02-Areas-Learning-ClaudeCertification-claudeCode-uigen/65f3f4e2-3d75-4100-b9ca-783358435904.jsonl",
+          "fork": true,
+          "flagArgs": [
+            "--permission-mode",
+            "default"
+          ]
+        },
+        "env": {
+          "CLAUDE_CONFIG_DIR": "/Users/praveensam/.claude-work",
+          "CLAUDE_BG_ISOLATION": "none"
+        },
+        "isolation": "none",
+        "respawnFlags": [
+          "--permission-mode",
+          "default"
+        ],
+        "seed": {
+          "intent": "[Request interrupted by user for tool use]"
+        },
+        "cols": 235,
+        "rows": 71
+      },
+      "decModes": [],
+      "rvAuth": "aaf1e3588ef42bf5c95bab13f7411740",
+      "ptyAuth": "1a33a8e4f135adf1620ce6f6f47a6e2a"
+    }
+  }
+}

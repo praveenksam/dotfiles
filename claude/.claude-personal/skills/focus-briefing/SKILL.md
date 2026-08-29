@@ -7,16 +7,18 @@ description: Produce a prioritized focus briefing across all of the user's proje
 
 Reads every project's source-of-truth file and reports what deserves attention now.
 
-## Files
+## Finding the files
 
-Projects live as folders in the user's Drive projects directory; each has a `project.md`
-(and optional `workstream-*.md`). Read all `project.md` files fresh. Roll up each project's
-Workstreams section rather than opening every workstream file — open a workstream file only
-if its rollup flags something that needs detail.
+Each project is a folder. Inside, the project context file and its workstream files are named
+in that folder's `CLAUDE.md`/`AGENTS.md` manifest (`project_file`, `workstream_glob`). For a
+sweep across ALL projects, glob the projects directory for `*.project.md` (the project files)
+and `*.workstream-*.md` (workstreams). `CLAUDE.md`/`AGENTS.md` are pointers to the project
+file — never separate content. Read all project files fresh; roll up each project's Workstreams
+section rather than opening every workstream file (open one only if its rollup needs detail).
 
 ## Procedure
 
-1. Read every `project.md`. Note Metadata (Priority, Next deadline, Last updated), Current
+1. Read every project file. Note Metadata (Priority, Next deadline, Last updated), Current
    Status (In flight, Blocked on, Open questions), Risks & Blindspots, and Workstreams rollups.
 2. Report concisely, grouped:
    - **Time-sensitive** — ranked by Next deadline and Priority.

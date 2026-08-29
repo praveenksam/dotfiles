@@ -1,1 +1,31 @@
 .DS_Store
+
+# --- Claude Code runtime state ---
+# Only settings.json and skills/ are worth versioning. Everything else is
+# session data, caches, and full conversation transcripts.
+claude/.claude*/projects/
+claude/.claude*/backups/
+claude/.claude*/file-history/
+claude/.claude*/cache/
+claude/.claude*/plugins/cache/
+claude/.claude*/tasks/
+claude/.claude*/telemetry/
+claude/.claude*/history.jsonl
+claude/.claude*/stats-cache.json
+claude/.claude*/policy-limits.json
+claude/.claude*/mcp-needs-auth-cache.json
+claude/.claude*/.claude.json
+claude/.claude*/.claude.json.backup.*
+
+# --- secrets ---
+.env
+*.pem
+*.key
+id_ed25519*
+id_rsa*
+**/.msmtp-pass
+**/hosts.yml
+
+# --- editor / tool state ---
+nvim/.config/nvim/lazy-lock.json
+*.log

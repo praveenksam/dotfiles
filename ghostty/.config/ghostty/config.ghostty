@@ -1,12 +1,14 @@
 # Background
 background = 000000
-background-opacity = 0.8
+background-opacity = 0.9
 background-blur-radius = 20
 
 # Font
 font-family = JetBrainsMono Nerd Font Mono
-font-size = 13
-font-thicken = true
+# font-family = Fira Code
+font-size = 14
+# font-thicken = true
+adjust-cell-height = 5%
 
 # Theme
 theme = Brogrammer

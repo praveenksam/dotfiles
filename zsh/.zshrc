@@ -5,7 +5,51 @@ eval "$(starship init zsh)"
 alias ls="eza --icons"
 alias ll="eza --icons --long --git"
 alias lla="eza --icons --long --git --all"
-alias lt="eza --icons --tree --level=2"
+# alias lt="eza --icons --tree --level=2"
+_lt_core() {
+  local show_all=$1; shift
+  local depth=2
+  local perms=1 owner=1 group=0 octal=0 showtime=0
+  local -a opts
+
+  while (( $# )); do
+    case "$1" in
+      --)                     shift; break ;;
+      -p|--no-permissions)    perms=0;    shift ;;
+      -N|--no-user)           owner=0;    shift ;;
+      -g|--group)             group=1;    shift ;;
+      -o|--octal-permissions) octal=1;    shift ;;
+      -t|--time)              showtime=1; shift ;;
+      -*)                     opts+=("$1"); shift ;;
+      *)  if [[ "$1" =~ ^[0-9]+$ ]]; then depth=$1; shift; else break; fi ;;
+    esac
+  done
+
+  (( perms ))    || opts+=(--no-permissions)
+  (( owner ))    || opts+=(--no-user)
+  (( showtime )) || opts+=(--no-time)
+  (( group ))    && opts+=(--group --smart-group)
+  (( octal ))    && opts+=(--octal-permissions)
+
+  local -a ig
+  if (( show_all )); then
+    opts+=(--all)
+    [[ -n "${LT_IGNORE:-}" ]] && ig=(--ignore-glob "$LT_IGNORE")
+  else
+    ig=(--ignore-glob "${LT_IGNORE:-.git|node_modules|.venv|.DS_Store}")
+  fi
+
+  local dir="${1:-.}"
+  [[ -d "$dir" ]] || dir=$(zoxide query -- "$@") || return 1
+
+  command eza --tree --level="$depth" --long --total-size --header \
+      --no-git --icons --group-directories-first --sort=size --reverse \
+      "${ig[@]}" "${opts[@]}" -- "$dir"
+}
+
+lt()  { _lt_core 0 "$@" }
+lta() { _lt_core 1 "$@" }
+
 # claude setup
 alias claude-personal="CLAUDE_CONFIG_DIR=~/.claude-personal claude"
 alias claude-work="CLAUDE_CONFIG_DIR=~/.claude-work claude"
@@ -48,6 +92,29 @@ END {
   printf "%-12s %6.1f GB\n", "Free:",      free_gb
   printf "%-12s %6.1f GB\n", "Total:",     total
 }'\'''
+
+# ipython kernel in terminal setup
+# Register current project's uv venv as a Jupyter kernel
+kernel-add() {
+  local name="${1:-$(basename $PWD)}"
+  local pyver=$(uv run python --version 2>&1 | awk '{print $2}')
+  uv add --dev ipykernel
+  uv add --dev jupysql
+  uv run python -m ipykernel install --user \
+    --name "$name" \
+    --display-name "$name ($pyver)"
+  echo "✓ Kernel '$name' registered for Python $pyver"
+}
+
+# Remove a registered kernel
+kernel-rm() {
+  jupyter kernelspec uninstall "$1"
+}
+
+# List all kernels
+kernel-ls() {
+  jupyter kernelspec list
+}
 
 # projects workflow
 export PROJECTS_DIR="$HOME/Google Drive/My Drive/Projects"
@@ -177,6 +244,16 @@ function cheat() {
 | t                  | New/attach tmux session       |
 | cheat              | Show this cheatsheet          |
 | cheat <tool>       | Show section for tool         |
+| lt                 | Visible files, 2 levels tree  |
+| lta                | +hidden, 2 levels tree        |
+| lt | lta n         | View n levels tree            |
+| lt | lta ~/.       | View specific folder (home)   |
+| lt | lta --git     | Extra eza flags pass through  |
+| lt | lta -o        | Add octal permissions         |
+| lt | lta -t        | Add the modified timestamp    |
+| lt | lta -p        | Drop the permissions column   |
+| lt | lta -N        | Drop the owner column         |
+| lt | lta -g        | Add group only when differs   |
 
 ## SKETCHYBAR
 | Command               | Action                     |
@@ -190,12 +267,30 @@ function cheat() {
 | brew upgrade          | Upgrade all packages       |
 | brew list             | List installed packages    |
 
+## IPYTHON
+| Command                                   | Action                                                     |
+|-------------------------------------------|------------------------------------------------------------|
+| kernel-add                                | Create new kernal based on project name and add SQL capab. |
+| kernel-ls                                 | List kernals available                                     |
+| kernel-rm                                 | Remove kernal                                              |
+                            ************ EUPORIE ************ 
+| euporie-notebook                          | Create euporie notebook                                    |
+| euporie-console                           | Access console in euporie                                  |
+| euporie-preview                           | Preview notebook in euporie                                |
+                      ************ MAGICS FOR IPYTHON ************ 
+| %%sql                                     | To enter at start of cell to make it a SQL cell            |
+| %load_ext sql                             | Load sql extension in Notebook via Python cell             |
+| %sql postgresql://user:pass@host/mydb     | Login to SQL DB via Python cell                            |
+| %sql                                      | Run SQL command within a Python cell to use result for code|
+| !                                         | Prefix to run command as bash command                      |
+| %%bash                                    | Magic to set whole cell as a bash cell                     |
+
 ## BMAD
 | Command                                   | Action                                                     |
 |-------------------------------------------|------------------------------------------------------------|
 | npx bmad-method install                   | Init BMAD in current repo                                  |
 | claude                                    | Open Claude Code                                           |
-                  
+
                   ************ MODULE 1: BMM (Product Development) ************ 
 | /bmad-bmm-document-project                | Analyse existing codebase, produce docs (brownfield)       |
 | /bmad-bmm-generate-project-context        | Scan codebase -> lean project-context.md                   |
