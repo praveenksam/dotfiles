@@ -1,1 +1,0 @@
-/Users/praveensam/.claude/plugins/marketplaces/caveman/caveman-compress/SKILL.md
