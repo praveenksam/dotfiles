@@ -1,8 +1,12 @@
 # Linux only. Equivalents for the macOS-specific bits.
 
 # --- Ubuntu renames these binaries to avoid collisions ---
-command -v batcat >/dev/null && ! command -v bat >/dev/null && alias bat="batcat"
-command -v fdfind >/dev/null && ! command -v fd  >/dev/null && alias fd="fdfind"
+if command -v batcat >/dev/null && ! command -v bat >/dev/null; then
+  bat() { command batcat "$@"; }
+fi
+if command -v fdfind >/dev/null && ! command -v fd >/dev/null; then
+  fd() { command fdfind "$@"; }
+fi
 
 # --- what's listening (ss replaces lsof) ---
 alias ports="ss -tlnp"
