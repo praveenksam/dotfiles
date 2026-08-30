@@ -3,8 +3,8 @@
 # Run as the working user, after doc 01 (hardening) is done.
 set -euo pipefail
 
-HOSTNAME_WANTED="cairn"
-PYTHON_PIN="3.12"     # dbt lags new Python releases; 26.04 defaults to 3.14
+HOSTNAME_WANTED="gotthard"
+PYTHON_PIN="3.12" # dbt lags new Python releases; 26.04 defaults to 3.14
 
 echo "==> Setting hostname (host-specific zsh config keys off this)"
 sudo hostnamectl set-hostname "$HOSTNAME_WANTED"
@@ -22,7 +22,7 @@ sudo apt remove -y kdump-tools linux-crashdump 2>/dev/null || true
 echo "==> On-disk scratch dir (since /tmp is now RAM-backed)"
 mkdir -p "$HOME/invest/tmp"
 if ! grep -q 'INVEST_TMP' "$HOME/.profile" 2>/dev/null; then
-  cat >> "$HOME/.profile" <<'EOF'
+  cat >>"$HOME/.profile" <<'EOF'
 
 # /tmp is a tmpfs on Ubuntu 26.04+. Keep large intermediates on disk.
 export INVEST_TMP="$HOME/invest/tmp"
@@ -46,10 +46,10 @@ curl -sS https://starship.rs/install.sh | sh -s -- -y
 
 echo "==> glow (not in apt)"
 sudo mkdir -p /etc/apt/keyrings
-curl -fsSL https://repo.charm.sh/apt/gpg.key \
-  | sudo gpg --dearmor -o /etc/apt/keyrings/charm.gpg
-echo "deb [signed-by=/etc/apt/keyrings/charm.gpg] https://repo.charm.sh/apt/ * *" \
-  | sudo tee /etc/apt/sources.list.d/charm.list
+curl -fsSL https://repo.charm.sh/apt/gpg.key |
+  sudo gpg --dearmor -o /etc/apt/keyrings/charm.gpg
+echo "deb [signed-by=/etc/apt/keyrings/charm.gpg] https://repo.charm.sh/apt/ * *" |
+  sudo tee /etc/apt/sources.list.d/charm.list
 sudo apt update && sudo apt install -y glow
 
 echo "==> uv"
@@ -61,9 +61,12 @@ uv python install "$PYTHON_PIN"
 
 echo "==> Terminal data stack, pinned to Python $PYTHON_PIN"
 # uv ships its own interpreter, so these are unaffected by the system default.
-uv tool install --python "$PYTHON_PIN" dbt-postgres
+# dbt: the `dbt` executable lives in dbt-core. Since dbt-core 1.8 the adapters
+# were decoupled, so dbt-postgres alone provides no entrypoint and uv rejects
+# it ("No executables are provided by package"). Install core, add the adapter.
+uv tool install --python "$PYTHON_PIN" --with dbt-postgres dbt-core
 uv tool install --python "$PYTHON_PIN" euporie
-uv tool install --python "$PYTHON_PIN" jupyter-core   # jupyter kernelspec
+uv tool install --python "$PYTHON_PIN" jupyter-core # jupyter kernelspec
 
 echo "==> Claude Code"
 curl -fsSL https://claude.ai/install.sh | bash
@@ -72,11 +75,30 @@ echo "==> Postgres MCP server"
 uv tool install --python "$PYTHON_PIN" postgres-mcp
 
 echo "==> TPM for tmux plugins"
-[ -d ~/.tmux/plugins/tpm ] || \
+[ -d ~/.tmux/plugins/tpm ] ||
   git clone https://github.com/tmux-plugins/tpm ~/.tmux/plugins/tpm
 
 echo "==> Clone dotfiles"
 [ -d ~/dotfiles ] || git clone git@mygit:praveenksam/dotfiles.git ~/dotfiles
+
+echo "==> Backing up distro default dotfiles that would block stow"
+# Ubuntu ships its own ~/.zshrc (and sometimes others). Stow refuses to
+# overwrite a real file and aborts the whole operation. Move them aside.
+# NOT `stow --adopt` — that pulls the distro's file INTO the repo, replacing
+# your version and staging it for commit.
+cd "$HOME"
+for f in .zshrc .tmux.conf .gitconfig .gitconfig-work .gitconfig-personal; do
+  if [ -e "$f" ] && [ ! -L "$f" ]; then
+    mv "$f" "$f.orig"
+    echo "    moved $f -> $f.orig"
+  fi
+done
+for f in .config/nvim .config/starship.toml .config/zsh; do
+  if [ -e "$f" ] && [ ! -L "$f" ]; then
+    mv "$f" "$f.orig"
+    echo "    moved $f -> $f.orig"
+  fi
+done
 
 echo "==> Stow server packages only"
 cd ~/dotfiles
@@ -86,7 +108,7 @@ stow zsh tmux git starship nvim
 
 echo "==> dbt profiles skeleton (password filled in by hand)"
 mkdir -p ~/.dbt
-[ -f ~/.dbt/profiles.yml ] || cat > ~/.dbt/profiles.yml <<'YAML'
+[ -f ~/.dbt/profiles.yml ] || cat >~/.dbt/profiles.yml <<'YAML'
 invest:
   target: dev
   outputs:
@@ -109,7 +131,7 @@ echo
 echo "==> Verifying the 26.04-specific fixes"
 printf '  crashkernel reserved : %s\n' "$(cat /sys/kernel/kexec_crash_size 2>/dev/null || echo 0)"
 printf '  /tmp filesystem      : %s\n' "$(findmnt -no FSTYPE /tmp 2>/dev/null || echo unknown)"
-printf '  dbt python           : %s\n' "$(uv tool run --from dbt-postgres python -V 2>/dev/null || echo 'check manually')"
+printf '  dbt                  : %s\n' "$(dbt --version 2>/dev/null | head -2 | tail -1 | xargs || echo 'check manually')"
 
 cat <<'EOF'
 
