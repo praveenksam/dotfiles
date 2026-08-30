@@ -9,20 +9,20 @@ One repo, one shell config, loaded conditionally per OS and per host.
 
 ## What's included
 
-| Tool              | Purpose                            | macOS | Server |
-| ----------------- | ---------------------------------- | :---: | :----: |
-| Ghostty           | Terminal emulator                  |   ✓   |        |
-| Aerospace         | Tiling window manager              |   ✓   |        |
-| Sketchybar        | Custom menu bar                    |   ✓   |        |
-| JankyBorders      | Window borders                     |   ✓   |        |
-| zsh + Starship    | Shell and prompt                   |   ✓   |   ✓    |
-| tmux              | Terminal multiplexer               |   ✓   |   ✓    |
-| Neovim (LazyVim)  | Editor                             |   ✓   |   ✓    |
-| Git               | Version control, multi-account SSH |   ✓   |   ✓    |
-| uv                | Python toolchain                   |   ✓   |   ✓    |
-| euporie + jupysql | Terminal notebooks and SQL cells   |   ✓   |   ✓    |
-| dbt               | SQL transformation and testing     |   ✓   |   ✓    |
-| Docker            | Containers                         |   ✓   |   ✓    |
+| Tool | Purpose | macOS | Server |
+| --- | --- | :-: | :-: |
+| Ghostty | Terminal emulator | ✓ | |
+| Aerospace | Tiling window manager | ✓ | |
+| Sketchybar | Custom menu bar | ✓ | |
+| JankyBorders | Window borders | ✓ | |
+| zsh + Starship | Shell and prompt | ✓ | ✓ |
+| tmux | Terminal multiplexer | ✓ | ✓ |
+| Neovim (LazyVim) | Editor | ✓ | ✓ |
+| Git | Version control, multi-account SSH | ✓ | ✓ |
+| uv | Python toolchain | ✓ | ✓ |
+| euporie + jupysql | Terminal notebooks and SQL cells | ✓ | ✓ |
+| dbt | SQL transformation and testing | ✓ | ✓ |
+| Docker | Containers | ✓ | ✓ |
 
 ---
 
@@ -330,7 +330,9 @@ npx bmad-method@latest install
 
 # Part 2 — Server installation
 
-For a headless Ubuntu 24.04 VPS. Assumes the box is provisioned, a non-root user exists, and SSH key auth works.
+For a headless **Ubuntu 26.04 LTS** VPS. Assumes the box is provisioned, a non-root user exists, and SSH key auth works.
+
+> **Other distributions.** The script targets 26.04. On **Ubuntu 24.04** it works unchanged, though the kdump and `/tmp` steps are no-ops. On **Debian 12** two packages are missing from the repos and need installing separately — see [Debian 12 notes](#debian-12-notes) at the end.
 
 **Prerequisite:** the macOS side must be committed and pushed first. The server clones this repo — if the config isn't pushed, there's nothing to clone.
 
@@ -377,6 +379,14 @@ stow zsh tmux git starship nvim
 
 Five packages. `sketchybar`, `aerospace`, `ghostty`, `fastfetch`, `gh` and `claude` are deliberately skipped.
 
+### Three Ubuntu 26.04 specifics the script handles
+
+**kdump is removed.** `kdump-tools` and `linux-crashdump` ship by default on 26.04 server installs and reserve a few hundred MB of RAM via `crashkernel`. Worth having on a machine you debug kernel panics on, wasteful on a small VPS. The script's closing output prints the reservation — it should read `0`, and needs a reboot to release if it doesn't.
+
+**`/tmp` is a tmpfs**, so anything written there consumes RAM. The script creates `~/invest/tmp` and exports `TMPDIR` to point at it in `~/.profile`. Backtests spilling large intermediates would otherwise eat memory you don't have.
+
+**Python is pinned to 3.12 for the data stack.** 26.04 defaults to Python 3.14, and dbt historically lags new releases. `uv tool install --python 3.12` gives dbt, euporie and `postgres-mcp` their own interpreter, independent of the system default. Change `PYTHON_PIN` at the top of the script once dbt supports 3.14.
+
 > The hostname set here must match a file in `zsh/.config/zsh/hosts/`, or no host config loads. Rename both together if you change it.
 
 ### Step 4 — Manual steps
@@ -400,12 +410,12 @@ cd ~/<project> && kernel-add <project>
 
 Never in the repo:
 
-| Secret              | Location                              |
-| ------------------- | ------------------------------------- |
-| `POSTGRES_PASSWORD` | project `.env`                        |
-| SMTP app password   | `~/.msmtp-pass` (chmod 600)           |
-| `DBT_PASSWORD`      | exported from a file outside the repo |
-| MCP `DATABASE_URI`  | the MCP server's own `env` block      |
+| Secret | Location |
+| --- | --- |
+| `POSTGRES_PASSWORD` | project `.env` |
+| SMTP app password | `~/.msmtp-pass` (chmod 600) |
+| `DBT_PASSWORD` | exported from a file outside the repo |
+| MCP `DATABASE_URI` | the MCP server's own `env` block |
 
 ### Step 6 — Verify
 
@@ -521,3 +531,34 @@ The `.gitignore` covers these, but worth stating plainly:
 - **Machine state** — `lazy-lock.json`, dbt `target/` and `logs/`, `gh/hosts.yml` (regenerate per machine with `gh auth login`).
 
 Ignoring a file does not remove it from history. If something sensitive was already committed, it needs `git-filter-repo` and a force-push.
+
+---
+
+## Debian 12 notes
+
+The bootstrap script targets Ubuntu 26.04. On Debian 12 (bookworm) two packages in the apt list are unavailable and need handling before running it.
+
+**`eza` is not in bookworm** — it arrived in Debian 13. Add the upstream repo:
+
+```sh
+sudo apt install -y gpg wget
+sudo mkdir -p /etc/apt/keyrings
+wget -qO- https://raw.githubusercontent.com/eza-community/eza/main/deb.asc \
+  | sudo gpg --dearmor -o /etc/apt/keyrings/gierens.gpg
+echo "deb [signed-by=/etc/apt/keyrings/gierens.gpg] http://deb.gierens.de stable main" \
+  | sudo tee /etc/apt/sources.list.d/gierens.list
+sudo chmod 644 /etc/apt/keyrings/gierens.gpg /etc/apt/sources.list.d/gierens.list
+sudo apt update && sudo apt install -y eza
+```
+
+**Neovim is 0.7.2 in bookworm**, but LazyVim needs 0.9+. It installs and then fails confusingly. Use the upstream binary:
+
+```sh
+sudo apt remove -y neovim
+curl -LO https://github.com/neovim/neovim/releases/latest/download/nvim-linux-x86_64.tar.gz
+sudo tar -C /opt -xzf nvim-linux-x86_64.tar.gz
+sudo ln -sf /opt/nvim-linux-x86_64/bin/nvim /usr/local/bin/nvim
+nvim --version
+```
+
+The kdump removal and `TMPDIR` export are harmless no-ops on Debian 12 — `/tmp` is disk-backed and kdump isn't installed by default. The Python pin is still correct, since bookworm ships 3.11 and uv supplies its own interpreter regardless.
